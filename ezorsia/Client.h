@@ -36,6 +36,7 @@ public:
 	static bool SwitchChinese;
 	static bool debug;
 	static bool noPassword;
+	static bool useRefreshRateFix;
 	static bool climbSpeedAuto;
 	static float climbSpeed;
 	static int speedMovementCap;

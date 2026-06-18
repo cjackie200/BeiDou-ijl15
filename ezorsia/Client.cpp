@@ -22,6 +22,7 @@ bool Client::bigLoginFrame = false; // 大型登录框
 bool Client::SwitchChinese = false; // 切换中文模式
 int Client::speedMovementCap = 140; // 移动速度上限
 bool Client::noPassword = false; // 无密码模式
+bool Client::useRefreshRateFix = false; // 刷新率兼容补丁
 bool Client::debug = false; // 调试模式
 bool Client::climbSpeedAuto = false; // 自动攀爬速度
 float Client::climbSpeed = 1.0; // 攀爬速度
@@ -992,6 +993,10 @@ HookPcCreateObject_IWzPackage(
 void Client::RefreshRate()
 {
 	//屏幕刷新率大于60客户端无法启动
+	if (!useRefreshRateFix)
+	{
+		return;
+	}
 
 	g_PcCreateObject_IWzPackage = (pfunPcCreateObject_IWzPackage)0x009FB0E9;
 	DetourTransactionBegin();
