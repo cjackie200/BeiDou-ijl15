@@ -3,6 +3,7 @@
 #include "codecaves.h"
 #include "FixIme.h"
 #include "FixBuddy.h"
+#include "detours.h"
 
 #include "MapleClientCollectionTypes/ZXString.h"
 
@@ -22,7 +23,6 @@ bool Client::bigLoginFrame = false; // 大型登录框
 bool Client::SwitchChinese = false; // 切换中文模式
 int Client::speedMovementCap = 140; // 移动速度上限
 bool Client::noPassword = false; // 无密码模式
-bool Client::useRefreshRateFix = false; // 刷新率兼容补丁
 bool Client::debug = false; // 调试模式
 bool Client::climbSpeedAuto = false; // 自动攀爬速度
 float Client::climbSpeed = 1.0; // 攀爬速度
@@ -968,41 +968,26 @@ void Client::WorldMap()
 	Memory::CodeCave(wordMapUIcc, 0x009EB594, 13);
 }
 
-#include "detours.h"
-
-typedef void(_cdecl* pfunPcCreateObject_IWzPackage)(int param1, DWORD param2, DWORD param3);
-pfunPcCreateObject_IWzPackage g_PcCreateObject_IWzPackage = nullptr;
-
-void
-_cdecl
-HookPcCreateObject_IWzPackage(
-	int param1
-	, DWORD param2
-	, DWORD param3)
+constexpr DWORD refreshRateAfterSetResolutionRtn = 0x009F7B45;
+__declspec(naked) void refreshRateAfterSetResolution()
 {
-	g_PcCreateObject_IWzPackage(param1, param2, param3);
+	__asm {
+		test ebx, ebx
+		je restore
+		mov byte ptr [ebx + 84h], 3Ch
 
-	int screen_refresh_rate = 0; 
-	memcpy((void*)&screen_refresh_rate, (void*)0x00BF14EC, sizeof(int));
-	if (screen_refresh_rate != 0)
-	{
-		unsigned char* p = (unsigned char*)screen_refresh_rate;
-		p[0x84] = 0x3C;
+	restore:
+		lea eax, [ebp - 44h]
+		push eax
+		mov byte ptr [ebp - 4], 2
+		jmp refreshRateAfterSetResolutionRtn
 	}
 }
+
 void Client::RefreshRate()
 {
 	//屏幕刷新率大于60客户端无法启动
-	if (!useRefreshRateFix)
-	{
-		return;
-	}
-
-	g_PcCreateObject_IWzPackage = (pfunPcCreateObject_IWzPackage)0x009FB0E9;
-	DetourTransactionBegin();
-	DetourUpdateThread(GetCurrentThread());
-	DetourAttach((LPVOID*)&g_PcCreateObject_IWzPackage, HookPcCreateObject_IWzPackage);
-	DetourTransactionCommit(); 
+	Memory::CodeCave(refreshRateAfterSetResolution, 0x009F7B3D, 8);
 }
 
 void Client::NoPSWDLogin()
