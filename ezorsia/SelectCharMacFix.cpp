@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "SelectCharMacFix.h"
+#include "QuestHook.h"
 
 #include <cctype>
 #include <cstring>
@@ -119,6 +120,9 @@ static bool RewriteSelectCharMacList(COutPacket* packet) {
 }
 
 static void __fastcall SendPacket_Hook(void* pThis, void* edx, COutPacket* packet) {
+    if (TryHandleQuestHookSend(pThis, edx, packet)) {
+        return;
+    }
     RewriteSelectCharMacList(packet);
     g_SendPacket(pThis, edx, packet);
 }

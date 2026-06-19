@@ -7,6 +7,7 @@
 #include <comutil.h>
 #include "BossHP.h"
 #include "HpMpAlert.h"
+#include "QuestHook.h"
 #include "SelectCharMacFix.h"
 #pragma comment(lib, "ws2_32.lib")
 
