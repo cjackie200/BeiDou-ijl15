@@ -2,6 +2,8 @@
 #include "QuestHook.h"
 
 #include <atomic>
+#include <cstdarg>
+#include <cstdio>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -21,8 +23,11 @@ constexpr WORD kSendNpcTalk = 0x0130;
 constexpr WORD kSendSetField = 0x007D;
 constexpr WORD kS2CInteractionHookRules = 0x1001;
 constexpr WORD kS2CInteractionHookResult = 0x1002;
+constexpr DWORD kClientSocketPtr = 0x00BE7914;
+constexpr DWORD kQuestActionClickAddr = 0x00716FE1;
 
-constexpr int kVersion = 3;
+constexpr int kLegacyRulesVersion = 3;
+constexpr int kVersion = 4;
 constexpr int kAnyId = -1;
 
 constexpr int kEventNpcClick = 1;
@@ -40,6 +45,11 @@ constexpr int kTargetDialogSelection = 3;
 constexpr int kQuestStateNone = 0;
 constexpr int kQuestStateNotStarted = 1;
 constexpr int kQuestStateStarted = 2;
+constexpr int kQuestStateCompleted = 3;
+constexpr int kQuestStateMaskAny = 0;
+constexpr int kQuestStateMaskNotStarted = 1;
+constexpr int kQuestStateMaskStarted = 1 << 1;
+constexpr int kQuestStateMaskCompleted = 1 << 2;
 
 constexpr int kActionMaskAny = 0;
 constexpr int kActionMaskQueryStart = 1;
@@ -52,6 +62,17 @@ constexpr int kDialogStateNone = 0;
 constexpr int kDialogStateOpen = 1;
 
 constexpr int kResultFallbackOriginal = 2;
+
+constexpr int kScopeAllRules = 0;
+constexpr int kScopeCharacterQuestRules = 1;
+constexpr int kScopeMapNpcRules = 2;
+constexpr int kScopeDialogTempRules = 3;
+
+constexpr int kReplaceScope = 1;
+constexpr int kClearScope = 2;
+constexpr int kMaxRulesPerPacket = 100;
+constexpr int kMaxRuleCount = 20000;
+constexpr ULONGLONG kPendingRuleBatchTimeoutMs = 5000;
 
 struct COutPacket {
     int Loopback;
@@ -109,17 +130,40 @@ struct PendingPacket {
     std::vector<unsigned char> bytes;
 };
 
+struct PendingLocalQuestAction {
+    void* thisPtr;
+    int arg;
+};
+
+struct PendingRuleBatch {
+    int batchId;
+    int batchCount;
+    ULONGLONG createdAt;
+    std::vector<bool> received;
+    std::vector<std::vector<InteractionHookRule>> chunks;
+};
+
 using SendPacket_t = void(__fastcall*)(void* pThis, void* edx, COutPacket* packet);
 static SendPacket_t g_SendPacket = reinterpret_cast<SendPacket_t>(0x0049637B);
 
+using QuestActionClick_t = void(__fastcall*)(void* pThis, void* edx, int arg);
+static QuestActionClick_t g_QuestActionClick = reinterpret_cast<QuestActionClick_t>(kQuestActionClickAddr);
+
 static std::mutex g_stateMutex;
-static std::vector<InteractionHookRule> g_rules;
+static std::vector<InteractionHookRule> g_characterQuestRules;
+static std::vector<InteractionHookRule> g_mapNpcRules;
+static std::vector<InteractionHookRule> g_dialogTempRules;
+static std::unordered_map<int, PendingRuleBatch> g_pendingRuleBatches;
 static std::unordered_map<int, PendingPacket> g_pendingPackets;
+static std::unordered_map<int, PendingLocalQuestAction> g_pendingLocalQuestActions;
 static std::unordered_map<int, int> g_npcIdByObjectId;
+static int g_lastAppliedRuleBatchIds[4] = {};
 static bool g_rulesLoaded = false;
 static int g_currentDialogNpcId = 0;
 static int g_currentDialogState = kDialogStateNone;
+static bool g_replayingLocalQuestAction = false;
 static std::atomic<int> g_nextRequestId{ 1 };
+static std::mutex g_traceMutex;
 
 enum class IncomingResult {
     None,
@@ -147,6 +191,157 @@ static void WriteI32(std::vector<unsigned char>& out, int value) {
     out.push_back(static_cast<unsigned char>((value >> 8) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 16) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 24) & 0xFF));
+}
+
+static bool TryReadDword(DWORD address, DWORD& out) {
+    __try {
+        out = *reinterpret_cast<DWORD*>(address);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+}
+
+static unsigned long IncomingPacketSize(CInPacket* packet) {
+    if (packet == nullptr) {
+        return 0;
+    }
+    if (packet->DataLen > 0) {
+        return packet->DataLen;
+    }
+    return packet->Size;
+}
+
+static void TraceV(const char* format, va_list args) {
+    std::lock_guard<std::mutex> lock(g_traceMutex);
+    FILE* file = nullptr;
+    if (fopen_s(&file, "interaction-hook.log", "ab") != 0 || file == nullptr) {
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
+        now.wYear,
+        now.wMonth,
+        now.wDay,
+        now.wHour,
+        now.wMinute,
+        now.wSecond,
+        now.wMilliseconds);
+    std::vfprintf(file, format, args);
+    std::fprintf(file, "\r\n");
+    std::fclose(file);
+}
+
+static void Trace(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    TraceV(format, args);
+    va_end(args);
+}
+
+static const char* ScopeName(int scope) {
+    switch (scope) {
+        case kScopeAllRules:
+            return "ALL_RULES";
+        case kScopeCharacterQuestRules:
+            return "CHARACTER_QUEST_RULES";
+        case kScopeMapNpcRules:
+            return "MAP_NPC_RULES";
+        case kScopeDialogTempRules:
+            return "DIALOG_TEMP_RULES";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static const char* ReplaceModeName(int replaceMode) {
+    switch (replaceMode) {
+        case kReplaceScope:
+            return "REPLACE_SCOPE";
+        case kClearScope:
+            return "CLEAR_SCOPE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static bool IsValidScope(int scope) {
+    return scope == kScopeAllRules
+        || scope == kScopeCharacterQuestRules
+        || scope == kScopeMapNpcRules
+        || scope == kScopeDialogTempRules;
+}
+
+static bool IsBusinessScope(int scope) {
+    return scope == kScopeCharacterQuestRules
+        || scope == kScopeMapNpcRules
+        || scope == kScopeDialogTempRules;
+}
+
+static std::vector<InteractionHookRule>* RulesForScopeLocked(int scope) {
+    switch (scope) {
+        case kScopeCharacterQuestRules:
+            return &g_characterQuestRules;
+        case kScopeMapNpcRules:
+            return &g_mapNpcRules;
+        case kScopeDialogTempRules:
+            return &g_dialogTempRules;
+        default:
+            return nullptr;
+    }
+}
+
+static int ActiveRuleCountLocked() {
+    return static_cast<int>(g_characterQuestRules.size()
+        + g_mapNpcRules.size()
+        + g_dialogTempRules.size());
+}
+
+static void RefreshRulesLoadedLocked() {
+    g_rulesLoaded = ActiveRuleCountLocked() > 0;
+}
+
+static bool RulesLoaded() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    return g_rulesLoaded;
+}
+
+static int RuleCount() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    return ActiveRuleCountLocked();
+}
+
+static void ClearAllRulesLocked() {
+    g_characterQuestRules.clear();
+    g_mapNpcRules.clear();
+    g_dialogTempRules.clear();
+    g_pendingRuleBatches.clear();
+    g_pendingPackets.clear();
+    g_pendingLocalQuestActions.clear();
+    g_npcIdByObjectId.clear();
+    g_currentDialogNpcId = 0;
+    g_currentDialogState = kDialogStateNone;
+    for (int& batchId : g_lastAppliedRuleBatchIds) {
+        batchId = 0;
+    }
+    g_rulesLoaded = false;
+}
+
+static void CleanupExpiredRuleBatchesLocked() {
+    const ULONGLONG now = GetTickCount64();
+    for (auto it = g_pendingRuleBatches.begin(); it != g_pendingRuleBatches.end();) {
+        if (now >= it->second.createdAt && now - it->second.createdAt > kPendingRuleBatchTimeoutMs) {
+            Trace("ApplyRules v4 pending batch timeout scope=%s batchId=%d",
+                ScopeName(it->first),
+                it->second.batchId);
+            it = g_pendingRuleBatches.erase(it);
+            continue;
+        }
+        ++it;
+    }
 }
 
 static int EventMask(int eventType) {
@@ -178,6 +373,19 @@ static bool RuleTargetMatches(const InteractionHookRule& rule, const HookEvent& 
     }
 }
 
+static int QuestStateMask(int questState) {
+    switch (questState) {
+        case kQuestStateNotStarted:
+            return kQuestStateMaskNotStarted;
+        case kQuestStateStarted:
+            return kQuestStateMaskStarted;
+        case kQuestStateCompleted:
+            return kQuestStateMaskCompleted;
+        default:
+            return kQuestStateMaskAny;
+    }
+}
+
 static bool RuleMatches(const InteractionHookRule& rule, const HookEvent& event, int actionMask) {
     if ((rule.eventMask & EventMask(event.eventType)) == 0) {
         return false;
@@ -186,6 +394,12 @@ static bool RuleMatches(const InteractionHookRule& rule, const HookEvent& event,
         return false;
     }
     if (rule.questId > 0 && event.questId > 0 && rule.questId != event.questId) {
+        return false;
+    }
+    const int eventQuestStateMask = QuestStateMask(event.questState);
+    if (eventQuestStateMask != kQuestStateMaskAny
+            && rule.questStateMask != kQuestStateMaskAny
+            && (rule.questStateMask & eventQuestStateMask) == 0) {
         return false;
     }
     if (rule.actionMask != kActionMaskAny && (rule.actionMask & actionMask) == 0) {
@@ -197,9 +411,18 @@ static bool RuleMatches(const InteractionHookRule& rule, const HookEvent& event,
     return true;
 }
 
-static bool HasEventRuleLocked(int eventType) {
+static bool RuleSetMatchesLocked(const std::vector<InteractionHookRule>& rules, const HookEvent& event, int actionMask) {
+    for (const InteractionHookRule& rule : rules) {
+        if (RuleMatches(rule, event, actionMask)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool RuleSetHasEventLocked(const std::vector<InteractionHookRule>& rules, int eventType) {
     const int mask = EventMask(eventType);
-    for (const InteractionHookRule& rule : g_rules) {
+    for (const InteractionHookRule& rule : rules) {
         if ((rule.eventMask & mask) != 0) {
             return true;
         }
@@ -207,40 +430,39 @@ static bool HasEventRuleLocked(int eventType) {
     return false;
 }
 
+static bool HasEventRuleLocked(int eventType) {
+    return RuleSetHasEventLocked(g_characterQuestRules, eventType)
+        || RuleSetHasEventLocked(g_mapNpcRules, eventType)
+        || RuleSetHasEventLocked(g_dialogTempRules, eventType);
+}
+
 static bool ShouldIntercept(const HookEvent& event, int actionMask) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (!g_rulesLoaded) {
         return false;
     }
-    for (const InteractionHookRule& rule : g_rules) {
-        if (RuleMatches(rule, event, actionMask)) {
-            return true;
-        }
+    if (RuleSetMatchesLocked(g_characterQuestRules, event, actionMask)
+            || RuleSetMatchesLocked(g_mapNpcRules, event, actionMask)
+            || RuleSetMatchesLocked(g_dialogTempRules, event, actionMask)) {
+        return true;
     }
 
     // If the object->NPC mapping is unavailable, let the server validate NPC clicks.
     return event.eventType == kEventNpcClick && event.clientNpcId <= 0 && HasEventRuleLocked(kEventNpcClick);
 }
 
-static bool ApplyRules(const unsigned char* payload, unsigned long payloadSize) {
-    if (payloadSize < 10) {
+static bool ParseRules(const unsigned char* cursor, int count, unsigned long availableBytes,
+                       std::vector<InteractionHookRule>& out) {
+    if (count < 0 || count > kMaxRuleCount) {
         return false;
     }
-    const unsigned short clientSubCommand = ReadU16(payload);
-    const int version = ReadI32(payload + 2);
-    const int count = ReadI32(payload + 6);
-    if (clientSubCommand != kCustomInteractionHookEvent || version != kVersion || count < 0 || count > 20000) {
-        return false;
-    }
-
     const unsigned long rulesBytes = static_cast<unsigned long>(count) * 28UL;
-    if (payloadSize < 10UL + rulesBytes) {
+    if (availableBytes < rulesBytes) {
         return false;
     }
 
-    std::vector<InteractionHookRule> next;
-    next.reserve(static_cast<std::size_t>(count));
-    const unsigned char* cursor = payload + 10;
+    out.clear();
+    out.reserve(static_cast<std::size_t>(count));
     for (int i = 0; i < count; ++i) {
         InteractionHookRule rule{};
         rule.eventMask = ReadI32(cursor);
@@ -252,17 +474,278 @@ static bool ApplyRules(const unsigned char* payload, unsigned long payloadSize) 
         rule.selectionId = ReadI32(cursor + 24);
         cursor += 28;
         if (rule.eventMask != 0) {
-            next.push_back(rule);
+            out.push_back(rule);
         }
+    }
+    return true;
+}
+
+static bool ApplyLegacyRules(const unsigned char* payload, unsigned long payloadSize) {
+    if (payloadSize < 10) {
+        Trace("ApplyRules v3 reject payloadSize=%lu reason=short", payloadSize);
+        return false;
+    }
+
+    const int count = ReadI32(payload + 6);
+    std::vector<InteractionHookRule> next;
+    if (!ParseRules(payload + 10, count, payloadSize - 10, next)) {
+        Trace("ApplyRules v3 reject payloadSize=%lu count=%d reason=rules-bytes", payloadSize, count);
+        return false;
     }
 
     std::lock_guard<std::mutex> lock(g_stateMutex);
-    g_rules.swap(next);
-    g_pendingPackets.clear();
-    g_currentDialogNpcId = 0;
-    g_currentDialogState = kDialogStateNone;
-    g_rulesLoaded = true;
+    ClearAllRulesLocked();
+    g_characterQuestRules.swap(next);
+    RefreshRulesLoadedLocked();
+    Trace("ApplyRules v3 ok count=%d accepted=%d total=%d",
+        count,
+        static_cast<int>(g_characterQuestRules.size()),
+        ActiveRuleCountLocked());
     return true;
+}
+
+static bool ApplyClearScopeV4(int scope, int batchId) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredRuleBatchesLocked();
+
+    if (scope == kScopeAllRules) {
+        ClearAllRulesLocked();
+        g_lastAppliedRuleBatchIds[kScopeAllRules] = batchId;
+        Trace("ApplyRules v4 clear scope=%s batchId=%d total=%d",
+            ScopeName(scope),
+            batchId,
+            ActiveRuleCountLocked());
+        return true;
+    }
+
+    if (!IsBusinessScope(scope)) {
+        Trace("ApplyRules v4 clear reject scope=%d batchId=%d reason=scope", scope, batchId);
+        return false;
+    }
+    if (batchId <= g_lastAppliedRuleBatchIds[scope]) {
+        Trace("ApplyRules v4 clear ignore scope=%s batchId=%d last=%d",
+            ScopeName(scope),
+            batchId,
+            g_lastAppliedRuleBatchIds[scope]);
+        return true;
+    }
+
+    std::vector<InteractionHookRule>* activeRules = RulesForScopeLocked(scope);
+    if (activeRules == nullptr) {
+        return false;
+    }
+    activeRules->clear();
+    g_pendingRuleBatches.erase(scope);
+    g_lastAppliedRuleBatchIds[scope] = batchId;
+    RefreshRulesLoadedLocked();
+    Trace("ApplyRules v4 clear scope=%s batchId=%d total=%d",
+        ScopeName(scope),
+        batchId,
+        ActiveRuleCountLocked());
+    return true;
+}
+
+static bool BatchCompleteLocked(const PendingRuleBatch& batch) {
+    for (bool received : batch.received) {
+        if (!received) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ApplyReplaceScopeV4(int scope, int batchId, int batchIndex, int batchCount,
+                                std::vector<InteractionHookRule>& packetRules) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredRuleBatchesLocked();
+
+    if (!IsBusinessScope(scope)) {
+        Trace("ApplyRules v4 replace reject scope=%d batchId=%d reason=scope", scope, batchId);
+        return false;
+    }
+    if (batchId <= g_lastAppliedRuleBatchIds[scope]) {
+        Trace("ApplyRules v4 replace ignore scope=%s batchId=%d last=%d",
+            ScopeName(scope),
+            batchId,
+            g_lastAppliedRuleBatchIds[scope]);
+        return true;
+    }
+
+    auto it = g_pendingRuleBatches.find(scope);
+    if (it == g_pendingRuleBatches.end() || it->second.batchId != batchId) {
+        PendingRuleBatch batch{};
+        batch.batchId = batchId;
+        batch.batchCount = batchCount;
+        batch.createdAt = GetTickCount64();
+        batch.received.assign(static_cast<std::size_t>(batchCount), false);
+        batch.chunks.resize(static_cast<std::size_t>(batchCount));
+        g_pendingRuleBatches.erase(scope);
+        it = g_pendingRuleBatches.emplace(scope, std::move(batch)).first;
+    }
+
+    PendingRuleBatch& batch = it->second;
+    if (batch.batchCount != batchCount || batchIndex < 0 || batchIndex >= batch.batchCount) {
+        Trace("ApplyRules v4 replace reject scope=%s batchId=%d batchIndex=%d batchCount=%d existingCount=%d",
+            ScopeName(scope),
+            batchId,
+            batchIndex,
+            batchCount,
+            batch.batchCount);
+        return false;
+    }
+    if (batch.received[static_cast<std::size_t>(batchIndex)]) {
+        Trace("ApplyRules v4 replace duplicate scope=%s batchId=%d batchIndex=%d",
+            ScopeName(scope),
+            batchId,
+            batchIndex);
+        return true;
+    }
+
+    batch.chunks[static_cast<std::size_t>(batchIndex)].swap(packetRules);
+    batch.received[static_cast<std::size_t>(batchIndex)] = true;
+    if (!BatchCompleteLocked(batch)) {
+        Trace("ApplyRules v4 replace pending scope=%s batchId=%d batch=%d/%d accepted=%d total=%d",
+            ScopeName(scope),
+            batchId,
+            batchIndex + 1,
+            batchCount,
+            static_cast<int>(batch.chunks[static_cast<std::size_t>(batchIndex)].size()),
+            ActiveRuleCountLocked());
+        return true;
+    }
+
+    std::vector<InteractionHookRule> next;
+    std::size_t total = 0;
+    for (const std::vector<InteractionHookRule>& chunk : batch.chunks) {
+        total += chunk.size();
+    }
+    next.reserve(total);
+    for (const std::vector<InteractionHookRule>& chunk : batch.chunks) {
+        next.insert(next.end(), chunk.begin(), chunk.end());
+    }
+
+    std::vector<InteractionHookRule>* activeRules = RulesForScopeLocked(scope);
+    if (activeRules == nullptr) {
+        return false;
+    }
+    activeRules->swap(next);
+    g_lastAppliedRuleBatchIds[scope] = batchId;
+    g_pendingRuleBatches.erase(scope);
+    RefreshRulesLoadedLocked();
+    Trace("ApplyRules v4 replace applied scope=%s batchId=%d accepted=%d total=%d",
+        ScopeName(scope),
+        batchId,
+        static_cast<int>(activeRules->size()),
+        ActiveRuleCountLocked());
+    return true;
+}
+
+static bool ApplyRulesV4(const unsigned char* payload, unsigned long payloadSize) {
+    if (payloadSize < 30) {
+        Trace("ApplyRules v4 reject payloadSize=%lu reason=short", payloadSize);
+        return false;
+    }
+
+    const int scope = ReadI32(payload + 6);
+    const int batchId = ReadI32(payload + 10);
+    const int batchIndex = ReadI32(payload + 14);
+    const int batchCount = ReadI32(payload + 18);
+    const int replaceMode = ReadI32(payload + 22);
+    const int ruleCount = ReadI32(payload + 26);
+    if (!IsValidScope(scope)
+            || batchId <= 0
+            || batchIndex < 0
+            || batchCount <= 0
+            || batchIndex >= batchCount
+            || (replaceMode != kReplaceScope && replaceMode != kClearScope)
+            || ruleCount < 0
+            || ruleCount > kMaxRulesPerPacket) {
+        Trace("ApplyRules v4 reject scope=%d batchId=%d batchIndex=%d batchCount=%d mode=%d count=%d reason=header",
+            scope,
+            batchId,
+            batchIndex,
+            batchCount,
+            replaceMode,
+            ruleCount);
+        return false;
+    }
+
+    if (replaceMode == kClearScope) {
+        if (batchIndex != 0 || batchCount != 1 || ruleCount != 0) {
+            Trace("ApplyRules v4 clear reject scope=%s batchId=%d batchIndex=%d batchCount=%d count=%d",
+                ScopeName(scope),
+                batchId,
+                batchIndex,
+                batchCount,
+                ruleCount);
+            return false;
+        }
+        return ApplyClearScopeV4(scope, batchId);
+    }
+
+    if (scope == kScopeAllRules || batchCount > (kMaxRuleCount + kMaxRulesPerPacket - 1) / kMaxRulesPerPacket) {
+        Trace("ApplyRules v4 replace reject scope=%s batchId=%d batchCount=%d reason=scope-or-count",
+            ScopeName(scope),
+            batchId,
+            batchCount);
+        return false;
+    }
+
+    const unsigned long rulesBytes = static_cast<unsigned long>(ruleCount) * 28UL;
+    if (payloadSize < 30UL + rulesBytes) {
+        Trace("ApplyRules v4 reject payloadSize=%lu scope=%s batchId=%d count=%d reason=rules-bytes",
+            payloadSize,
+            ScopeName(scope),
+            batchId,
+            ruleCount);
+        return false;
+    }
+
+    std::vector<InteractionHookRule> packetRules;
+    if (!ParseRules(payload + 30, ruleCount, payloadSize - 30, packetRules)) {
+        Trace("ApplyRules v4 reject scope=%s batchId=%d count=%d reason=parse",
+            ScopeName(scope),
+            batchId,
+            ruleCount);
+        return false;
+    }
+
+    Trace("ApplyRules v4 packet scope=%s batchId=%d batch=%d/%d mode=%s count=%d accepted=%d",
+        ScopeName(scope),
+        batchId,
+        batchIndex + 1,
+        batchCount,
+        ReplaceModeName(replaceMode),
+        ruleCount,
+        static_cast<int>(packetRules.size()));
+    return ApplyReplaceScopeV4(scope, batchId, batchIndex, batchCount, packetRules);
+}
+
+static bool ApplyRules(const unsigned char* payload, unsigned long payloadSize) {
+    if (payloadSize < 6) {
+        Trace("ApplyRules reject payloadSize=%lu reason=short", payloadSize);
+        return false;
+    }
+    const unsigned short clientSubCommand = ReadU16(payload);
+    const int version = ReadI32(payload + 2);
+    if (clientSubCommand != kCustomInteractionHookEvent) {
+        Trace("ApplyRules reject payloadSize=%lu sub=0x%04X version=%d reason=sub",
+            payloadSize,
+            clientSubCommand,
+            version);
+        return false;
+    }
+    if (version == kLegacyRulesVersion) {
+        return ApplyLegacyRules(payload, payloadSize);
+    }
+    if (version == kVersion) {
+        return ApplyRulesV4(payload, payloadSize);
+    }
+    Trace("ApplyRules reject payloadSize=%lu sub=0x%04X version=%d reason=version",
+        payloadSize,
+        clientSubCommand,
+        version);
+    return false;
 }
 
 static int ResolveNpcIdByObjectId(int objectId) {
@@ -287,6 +770,7 @@ static void TrackNpcSpawn(int objectId, int npcId) {
     }
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_npcIdByObjectId[objectId] = npcId;
+    Trace("TrackNpcSpawn objectId=%d npcId=%d", objectId, npcId);
 }
 
 static void TrackNpcRemove(int objectId) {
@@ -311,6 +795,7 @@ static void TrackNpcTalkPacket(const unsigned char* payload, unsigned long paylo
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_currentDialogNpcId = ReadI32(payload + 1);
     g_currentDialogState = kDialogStateOpen;
+    Trace("TrackNpcTalk npcId=%d payloadSize=%lu", g_currentDialogNpcId, payloadSize);
 }
 
 static void TrackIncomingPacket(unsigned short opcode, const unsigned char* payload, unsigned long payloadSize) {
@@ -364,10 +849,29 @@ static bool TakePendingPacket(int requestId, PendingPacket& out) {
     return true;
 }
 
-static void ReplayPendingPacket(int requestId) {
+static bool TakePendingLocalQuestAction(int requestId, PendingLocalQuestAction& out) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_pendingLocalQuestActions.find(requestId);
+    if (it == g_pendingLocalQuestActions.end()) {
+        return false;
+    }
+    out = it->second;
+    g_pendingLocalQuestActions.erase(it);
+    return true;
+}
+
+static void StorePendingLocalQuestAction(int requestId, void* thisPtr, int arg) {
+    if (thisPtr == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    g_pendingLocalQuestActions[requestId] = PendingLocalQuestAction{ thisPtr, arg };
+}
+
+static bool ReplayPendingPacket(int requestId) {
     PendingPacket pending{};
     if (!TakePendingPacket(requestId, pending) || pending.bytes.empty()) {
-        return;
+        return false;
     }
 
     COutPacket out{};
@@ -377,11 +881,26 @@ static void ReplayPendingPacket(int requestId) {
     out.Offset = 0;
     out.EncryptedByShanda = 0;
     g_SendPacket(pending.socket, pending.edx, &out);
+    return true;
+}
+
+static bool ReplayPendingLocalQuestAction(int requestId) {
+    PendingLocalQuestAction pending{};
+    if (!TakePendingLocalQuestAction(requestId, pending) || pending.thisPtr == nullptr) {
+        return false;
+    }
+    Trace("ReplayLocalQuestAction requestId=%d this=%p arg=%d", requestId, pending.thisPtr, pending.arg);
+    g_replayingLocalQuestAction = true;
+    g_QuestActionClick(pending.thisPtr, nullptr, pending.arg);
+    g_replayingLocalQuestAction = false;
+    return true;
 }
 
 static void DropPendingPacket(int requestId) {
     PendingPacket ignored{};
     TakePendingPacket(requestId, ignored);
+    PendingLocalQuestAction localIgnored{};
+    TakePendingLocalQuestAction(requestId, localIgnored);
 }
 
 static void SendInteractionHookEvent(void* socket, void* edx, const HookEvent& event) {
@@ -410,6 +929,17 @@ static void SendInteractionHookEvent(void* socket, void* edx, const HookEvent& e
     out.Offset = 0;
     out.EncryptedByShanda = 0;
     g_SendPacket(socket, edx, &out);
+    Trace("SendHookEvent requestId=%d eventType=%d targetType=%d targetId=%d objectId=%d npcId=%d questId=%d state=%d rawAction=%d selection=%d",
+        event.requestId,
+        event.eventType,
+        event.targetType,
+        event.targetId,
+        event.objectId,
+        event.clientNpcId,
+        event.questId,
+        event.questState,
+        event.rawAction,
+        event.selection);
 }
 
 static bool ParseQuestAction(unsigned char nativeAction, int& actionMask, int& questState) {
@@ -433,7 +963,22 @@ static bool ParseQuestAction(unsigned char nativeAction, int& actionMask, int& q
 }
 
 static bool TrySendHookEvent(void* socket, void* edx, COutPacket* packet, HookEvent event, int actionMask) {
-    if (!ShouldIntercept(event, actionMask)) {
+    const bool intercept = ShouldIntercept(event, actionMask);
+    Trace("ShouldIntercept eventType=%d targetType=%d targetId=%d objectId=%d npcId=%d questId=%d state=%d rawAction=%d actionMask=%d selection=%d rulesLoaded=%d ruleCount=%d intercept=%d",
+        event.eventType,
+        event.targetType,
+        event.targetId,
+        event.objectId,
+        event.clientNpcId,
+        event.questId,
+        event.questState,
+        event.rawAction,
+        actionMask,
+        event.selection,
+        RulesLoaded() ? 1 : 0,
+        RuleCount(),
+        intercept ? 1 : 0);
+    if (!intercept) {
         return false;
     }
 
@@ -455,6 +1000,7 @@ static bool TryInterceptNpcTalk(void* socket, void* edx, COutPacket* packet) {
 
     const int objectId = ReadI32(data + 2);
     const int npcId = ResolveNpcIdByObjectId(objectId);
+    Trace("Outgoing NPC_TALK size=%lu objectId=%d resolvedNpcId=%d", packet->Size, objectId, npcId);
     HookEvent event{};
     event.eventType = kEventNpcClick;
     event.targetType = kTargetNpc;
@@ -483,6 +1029,7 @@ static bool TryInterceptNpcTalkMore(void* socket, void* edx, COutPacket* packet)
     const unsigned char lastMsg = data[2];
     const unsigned char action = data[3];
     if (lastMsg == 2) {
+        Trace("Outgoing NPC_MORE ignored text-input size=%lu lastMsg=%u action=%u", packet->Size, lastMsg, action);
         return false;
     }
 
@@ -493,10 +1040,13 @@ static bool TryInterceptNpcTalkMore(void* socket, void* edx, COutPacket* packet)
         selection = static_cast<int>(data[4]);
     }
     if (selection < 0) {
+        Trace("Outgoing NPC_MORE ignored no-selection size=%lu lastMsg=%u action=%u selection=%d", packet->Size, lastMsg, action, selection);
         return false;
     }
 
     const int npcId = CurrentDialogNpcId();
+    Trace("Outgoing NPC_MORE size=%lu lastMsg=%u action=%u selection=%d currentNpcId=%d",
+        packet->Size, lastMsg, action, selection, npcId);
     HookEvent event{};
     event.eventType = kEventNpcDialogSelection;
     event.targetType = kTargetDialogSelection;
@@ -527,6 +1077,8 @@ static bool TryInterceptQuestAction(void* socket, void* edx, COutPacket* packet)
     int actionMask = 0;
     int questState = 0;
     if (!ParseQuestAction(nativeAction, actionMask, questState)) {
+        Trace("Outgoing QUEST_ACTION ignored nativeAction=%u questId=%d size=%lu",
+            nativeAction, questId, packet->Size);
         return false;
     }
 
@@ -534,6 +1086,8 @@ static bool TryInterceptQuestAction(void* socket, void* edx, COutPacket* packet)
     if (packet->Size >= 9) {
         npcId = ReadI32(data + 5);
     }
+    Trace("Outgoing QUEST_ACTION size=%lu action=%u questId=%d npcId=%d actionMask=%d questState=%d",
+        packet->Size, nativeAction, questId, npcId, actionMask, questState);
 
     HookEvent event{};
     event.eventType = kEventQuestAction;
@@ -550,18 +1104,105 @@ static bool TryInterceptQuestAction(void* socket, void* edx, COutPacket* packet)
     return TrySendHookEvent(socket, edx, packet, event, actionMask);
 }
 
+static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId, int& nativeAction, int& actionMask, int& questState) {
+    if (thisPtr == nullptr) {
+        return false;
+    }
+
+    __try {
+        const unsigned char* base = reinterpret_cast<const unsigned char*>(thisPtr);
+        questId = static_cast<int>(*reinterpret_cast<const unsigned short*>(base + 0x0C));
+        npcId = *reinterpret_cast<const int*>(base + 0x10);
+        const int questEntryState = *reinterpret_cast<const int*>(base + 0x14);
+        if (questEntryState == 0) {
+            nativeAction = 4;
+        } else if (questEntryState == 1) {
+            nativeAction = 5;
+        } else {
+            nativeAction = 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        questId = 0;
+        npcId = 0;
+        nativeAction = 0;
+        return false;
+    }
+
+    if (questId <= 0 || !ParseQuestAction(static_cast<unsigned char>(nativeAction), actionMask, questState)) {
+        return false;
+    }
+    return true;
+}
+
+static bool TryInterceptLocalQuestAction(void* thisPtr, int arg) {
+    int questId = 0;
+    int npcId = 0;
+    int nativeAction = 0;
+    int actionMask = 0;
+    int questState = 0;
+    if (!TryReadLocalQuestAction(thisPtr, questId, npcId, nativeAction, actionMask, questState)) {
+        return false;
+    }
+
+    HookEvent event{};
+    event.eventType = kEventQuestAction;
+    event.targetType = kTargetQuest;
+    event.targetId = questId;
+    event.objectId = 0;
+    event.clientNpcId = npcId;
+    event.questId = questId;
+    event.questState = questState;
+    event.rawAction = nativeAction;
+    event.selection = kAnyId;
+    event.dialogContext = kDialogContextNone;
+    event.dialogState = kDialogStateNone;
+
+    const bool intercept = ShouldIntercept(event, actionMask);
+    Trace("Local QUEST_ACTION this=%p arg=%d action=%d questId=%d npcId=%d actionMask=%d questState=%d rulesLoaded=%d ruleCount=%d intercept=%d",
+        thisPtr,
+        arg,
+        nativeAction,
+        questId,
+        npcId,
+        actionMask,
+        questState,
+        RulesLoaded() ? 1 : 0,
+        RuleCount(),
+        intercept ? 1 : 0);
+    if (!intercept) {
+        return false;
+    }
+
+    DWORD socketPtr = 0;
+    if (!TryReadDword(kClientSocketPtr, socketPtr) || socketPtr == 0) {
+        Trace("Local QUEST_ACTION reject questId=%d reason=no-socket", questId);
+        return false;
+    }
+
+    event.requestId = g_nextRequestId.fetch_add(1);
+    StorePendingLocalQuestAction(event.requestId, thisPtr, arg);
+    SendInteractionHookEvent(reinterpret_cast<void*>(socketPtr), nullptr, event);
+    return true;
+}
+
 static void HandleResult(const unsigned char* payload, unsigned long payloadSize) {
     if (payloadSize < 12) {
+        Trace("HandleResult reject payloadSize=%lu reason=short", payloadSize);
         return;
     }
     const int version = ReadI32(payload);
     const int requestId = ReadI32(payload + 4);
     const int resultCode = ReadI32(payload + 8);
-    if (version != kVersion || requestId <= 0) {
+    if ((version != kVersion && version != kLegacyRulesVersion) || requestId <= 0) {
+        Trace("HandleResult reject version=%d requestId=%d result=%d",
+            version, requestId, resultCode);
         return;
     }
+    Trace("HandleResult requestId=%d result=%d", requestId, resultCode);
     if (resultCode == kResultFallbackOriginal) {
-        ReplayPendingPacket(requestId);
+        if (!ReplayPendingPacket(requestId)) {
+            ReplayPendingLocalQuestAction(requestId);
+        }
         return;
     }
     DropPendingPacket(requestId);
@@ -569,19 +1210,22 @@ static void HandleResult(const unsigned char* payload, unsigned long payloadSize
 
 static IncomingResult HandleIncomingAtOffset(CInPacket* packet, unsigned long headerOffset) {
     const unsigned char* data = reinterpret_cast<const unsigned char*>(packet->Data);
-    if (packet->Size < headerOffset + 2) {
+    const unsigned long packetSize = IncomingPacketSize(packet);
+    if (packetSize < headerOffset + 2) {
         return IncomingResult::None;
     }
 
     const unsigned short opcode = ReadU16(data + headerOffset);
     const unsigned char* payload = data + headerOffset + 2;
-    const unsigned long payloadSize = packet->Size - headerOffset - 2;
+    const unsigned long payloadSize = packetSize - headerOffset - 2;
 
     if (opcode == kS2CInteractionHookRules) {
+        Trace("Incoming hook rules opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         ApplyRules(payload, payloadSize);
         return IncomingResult::Consumed;
     }
     if (opcode == kS2CInteractionHookResult) {
+        Trace("Incoming hook result opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         HandleResult(payload, payloadSize);
         return IncomingResult::Consumed;
     }
@@ -620,6 +1264,7 @@ bool HandleQuestHookIncoming(void* packet) {
     __try {
         handled = HandleIncoming(reinterpret_cast<CInPacket*>(packet));
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Trace("HandleQuestHookIncoming exception");
         handled = false;
     }
     return handled;
@@ -631,7 +1276,31 @@ bool TryHandleQuestHookSend(void* socket, void* edx, void* packet) {
         COutPacket* outPacket = reinterpret_cast<COutPacket*>(packet);
         handled = TryInterceptOutgoing(socket, edx, outPacket);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Trace("TryHandleQuestHookSend exception");
         handled = false;
     }
     return handled;
+}
+
+static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
+    if (g_replayingLocalQuestAction) {
+        g_QuestActionClick(pThis, edx, arg);
+        return;
+    }
+    if (TryInterceptLocalQuestAction(pThis, arg)) {
+        return;
+    }
+    g_QuestActionClick(pThis, edx, arg);
+}
+
+void HookQuestActionClick(bool enable) {
+    const bool ok = Memory::SetHook(enable, reinterpret_cast<void**>(&g_QuestActionClick), QuestActionClick_Hook);
+    Trace("QuestActionClick hook enable=%d ok=%d addr=0x%08X", enable ? 1 : 0, ok ? 1 : 0, kQuestActionClickAddr);
+}
+
+void QuestHookTrace(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    TraceV(format, args);
+    va_end(args);
 }

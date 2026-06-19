@@ -66,6 +66,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 	case DLL_PROCESS_ATTACH:
 	{
 		//CreateConsole();	//console for devs, use this to log stuff if you want
+		char modulePath[MAX_PATH]{};
+		char currentDirectory[MAX_PATH]{};
+		GetModuleFileNameA(hModule, modulePath, MAX_PATH);
+		GetCurrentDirectoryA(MAX_PATH, currentDirectory);
+		QuestHookTrace("DLL_PROCESS_ATTACH module=%s cwd=%s", modulePath, currentDirectory);
 		INIReader reader("config.ini");
 		if (reader.ParseError() == 0) {
 			Client::m_nGameWidth = reader.GetInteger("general", "width", 1280);
@@ -98,6 +103,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 			Client::talkRepeat = reader.GetBoolean("optional", "talkRepeat", false);
 			Client::talkTime = reader.GetInteger("optional", "talkTime", 2000);
 		}
+		QuestHookTrace("Config parsed parseError=%d server=%s:%d size=%dx%d",
+			reader.ParseError(),
+			Client::ServerIP_AddressFromINI.c_str(),
+			Client::serverIP_Port,
+			Client::m_nGameWidth,
+			Client::m_nGameHeight);
 
 		Hook_CreateMutexA(true); //multiclient //ty darter, angel, and alias!
 		HookCreateWindowExA(true); //default ezorsia
@@ -116,6 +127,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		HookSaveGlobal(true);
 		HookHpMpAlertRecv(true);
 		HookSelectCharMacFix(true);
+		HookQuestActionClick(true);
+		QuestHookTrace("Packet hooks installed recv=1 send=1 localQuest=1");
 		//Hook_get_unknown(true);
 		//Hook_get_resource_object(true); //helper function hooks  //ty teto for helping me get started
 		//Hook_com_ptr_t_IWzProperty__ctor(true);
