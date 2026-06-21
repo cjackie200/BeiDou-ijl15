@@ -31,7 +31,7 @@ constexpr DWORD kClientSocketPtr = 0x00BE7914;
 constexpr DWORD kQuestActionClickAddr = 0x00716FE1;
 
 constexpr int kLegacyRulesVersion = 3;
-constexpr int kVersion = 4;
+constexpr int kVersion = 5; // multi-condition progress (conditionCount per entry)
 constexpr int kAnyId = -1;
 
 constexpr int kEventNpcClick = 1;
@@ -199,7 +199,7 @@ static std::mutex g_stateMutex;
 static std::vector<InteractionHookRule> g_characterQuestRules;
 static std::vector<InteractionHookRule> g_mapNpcRules;
 static std::vector<InteractionHookRule> g_dialogTempRules;
-static std::unordered_map<int, std::string> g_lifeProofProgressTextByQuestId;
+static std::unordered_map<int, std::string> g_progressTextByQuestId;
 static std::unordered_map<int, PendingRuleBatch> g_pendingRuleBatches;
 static ActivePending g_activePending{};
 static IgnoredQuestAction g_ignoreNextOutgoingQuestAction{};
@@ -533,7 +533,7 @@ static void ClearAllRulesLocked() {
     g_characterQuestRules.clear();
     g_mapNpcRules.clear();
     g_dialogTempRules.clear();
-    g_lifeProofProgressTextByQuestId.clear();
+    g_progressTextByQuestId.clear();
     g_pendingRuleBatches.clear();
     g_activePending = ActivePending{};
     ClearIgnoreNextQuestActionLocked();
@@ -546,17 +546,41 @@ static void ClearAllRulesLocked() {
     g_rulesLoaded = false;
 }
 
-static std::string ProgressTextForQuestLocked(int questId) {
-    auto it = g_lifeProofProgressTextByQuestId.find(questId);
-    if (it == g_lifeProofProgressTextByQuestId.end() || it->second.empty()) {
-        return "...";
+static std::string ProgressTextForQuestLocked(int questId, bool& hit) {
+    auto it = g_progressTextByQuestId.find(questId);
+    if (it == g_progressTextByQuestId.end() || it->second.empty()) {
+        hit = false;
+        return "";
     }
+    hit = true;
     return it->second;
 }
 
-static bool ParseLifeProofProgressMarker(const std::string& source, size_t prefixPos, int& questId,
-                                         size_t& markerEnd) {
-    static const std::string prefix = "@@BD_LP_PROGRESS:";
+static bool FindNextProgressMarker(const std::string& source, size_t searchFrom, size_t& markerStart,
+                                   std::string& prefix) {
+    static const char* prefixes[] = {
+        "@@BD_IH_PROGRESS:",
+        "@@DB_IH_PROGRESS:",
+        "@@BD_LP_PROGRESS:",
+    };
+    markerStart = std::string::npos;
+    prefix.clear();
+    for (const char* candidate : prefixes) {
+        const std::string candidatePrefix(candidate);
+        size_t pos = source.find(candidatePrefix, searchFrom);
+        if (pos == std::string::npos) {
+            continue;
+        }
+        if (markerStart == std::string::npos || pos < markerStart) {
+            markerStart = pos;
+            prefix = candidatePrefix;
+        }
+    }
+    return markerStart != std::string::npos;
+}
+
+static bool ParseProgressMarker(const std::string& source, size_t prefixPos, const std::string& prefix, int& questId,
+                                size_t& markerEnd) {
     questId = 0;
     markerEnd = std::string::npos;
 
@@ -569,16 +593,34 @@ static bool ParseLifeProofProgressMarker(const std::string& source, size_t prefi
         questId = questId * 10 + (source[pos] - '0');
         ++pos;
     }
-    if (questId <= 0 || pos + 2 > source.size() || source[pos] != '@' || source[pos + 1] != '@') {
+    if (questId <= 0 || pos >= source.size() || source[pos] != '@') {
         return false;
     }
 
-    markerEnd = pos + 2;
+    while (pos < source.size() && source[pos] == '@') {
+        ++pos;
+    }
+    markerEnd = pos;
     return true;
 }
 
-static bool ReplaceLifeProofProgressMarkers(const char* input, std::string& output) {
-    static const std::string prefix = "@@BD_LP_PROGRESS:";
+static size_t MalformedProgressMarkerEnd(const std::string& source, size_t prefixPos, const std::string& prefix) {
+    const size_t contentStart = prefixPos + prefix.size();
+    size_t markerEnd = source.find("@@", contentStart);
+    if (markerEnd == std::string::npos) {
+        markerEnd = source.find('@', contentStart);
+        if (markerEnd == std::string::npos) {
+            return source.size();
+        }
+        while (markerEnd < source.size() && source[markerEnd] == '@') {
+            ++markerEnd;
+        }
+        return markerEnd;
+    }
+    return markerEnd + 2;
+}
+
+static bool ReplaceProgressMarkers(const char* input, std::string& output) {
     if (input == nullptr) {
         return false;
     }
@@ -588,36 +630,42 @@ static bool ReplaceLifeProofProgressMarkers(const char* input, std::string& outp
     bool replaced = false;
     output.clear();
     while (true) {
-        size_t markerStart = source.find(prefix, searchFrom);
-        if (markerStart == std::string::npos) {
+        size_t markerStart = std::string::npos;
+        std::string prefix;
+        if (!FindNextProgressMarker(source, searchFrom, markerStart, prefix)) {
             output.append(source, searchFrom, std::string::npos);
             break;
         }
 
         int questId = 0;
         size_t markerEnd = std::string::npos;
-        if (!ParseLifeProofProgressMarker(source, markerStart, questId, markerEnd)) {
-            output.append(source, searchFrom, markerStart + prefix.size() - searchFrom);
-            searchFrom = markerStart + prefix.size();
+        if (!ParseProgressMarker(source, markerStart, prefix, questId, markerEnd)) {
+            size_t malformedEnd = MalformedProgressMarkerEnd(source, markerStart, prefix);
+            output.append(source, searchFrom, markerStart - searchFrom);
+            Trace("InteractionHook progress marker malformed prefix=%s text=%s", prefix.c_str(),
+                source.substr(markerStart, malformedEnd - markerStart).c_str());
+            searchFrom = malformedEnd;
+            replaced = true;
             continue;
         }
 
         std::string replacement;
+        bool hit = false;
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
-            replacement = ProgressTextForQuestLocked(questId);
+            replacement = ProgressTextForQuestLocked(questId, hit);
         }
         output.append(source, searchFrom, markerStart - searchFrom);
         output.append(replacement);
-        Trace("LifeProof progress marker replaced questId=%d hit=%d text=%s",
+        Trace("InteractionHook progress marker replaced questId=%d hit=%d text=%s",
             questId,
-            replacement == "..." ? 0 : 1,
+            hit ? 1 : 0,
             replacement.c_str());
         searchFrom = markerEnd;
         replaced = true;
     }
     if (replaced) {
-        Trace("LifeProof progress marker text source=%s output=%s",
+        Trace("InteractionHook progress marker text source=%s output=%s",
             source.c_str(),
             output.c_str());
     }
@@ -1900,7 +1948,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
     const unsigned char* end = payload + payloadSize;
     std::unordered_map<int, std::string> next;
     for (int i = 0; i < count; ++i) {
-        if (cursor + 18 > end) {
+        if (cursor + 12 > end) {
             Trace("ApplyProgress reject count=%d index=%d reason=entry-short", count, i);
             return false;
         }
@@ -1908,27 +1956,41 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
         cursor += 4;
         const int state = ReadI32(cursor);
         cursor += 4;
-        const int current = ReadI32(cursor);
+        const int conditionCount = ReadI32(cursor);
         cursor += 4;
-        const int required = ReadI32(cursor);
-        cursor += 4;
-
-        std::string text;
-        if (!ReadPacketString(cursor, end, text)) {
-            Trace("ApplyProgress reject questId=%d index=%d reason=text", questId, i);
+        if (conditionCount < 0 || conditionCount > 20) {
+            Trace("ApplyProgress reject questId=%d conditionCount=%d reason=bad-cond-count", questId, conditionCount);
             return false;
+        }
+
+        std::string combinedText;
+        for (int ci = 0; ci < conditionCount; ++ci) {
+            if (cursor + 8 > end) {
+                Trace("ApplyProgress reject questId=%d cond=%d reason=cond-short", questId, ci);
+                return false;
+            }
+            const int current = ReadI32(cursor);
+            cursor += 4;
+            const int required = ReadI32(cursor);
+            cursor += 4;
+
+            std::string text;
+            if (!ReadPacketString(cursor, end, text)) {
+                Trace("ApplyProgress reject questId=%d cond=%d reason=text", questId, ci);
+                return false;
+            }
+            if (ci > 0) {
+                combinedText += "\r\n";
+            }
+            combinedText += text;
+            Trace("ApplyProgress entry questId=%d cond=%d state=%d current=%d required=%d text=%s",
+                questId, ci, state, current, required, text.c_str());
         }
         if (questId <= 0) {
             Trace("ApplyProgress reject questId=%d index=%d reason=quest", questId, i);
             return false;
         }
-        next[questId] = text;
-        Trace("ApplyProgress entry questId=%d state=%d current=%d required=%d text=%s",
-            questId,
-            state,
-            current,
-            required,
-            text.c_str());
+        next[questId] = combinedText;
     }
     if (cursor != end) {
         Trace("ApplyProgress warning count=%d reason=trailing-bytes bytes=%lu",
@@ -1938,7 +2000,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
-        g_lifeProofProgressTextByQuestId.swap(next);
+        g_progressTextByQuestId.swap(next);
     }
     Trace("ApplyProgress ok count=%d", count);
     return true;
@@ -2019,7 +2081,7 @@ bool TryHandleQuestHookSend(void* socket, void* edx, void* packet) {
 bool ReplaceQuestHookProgressMarkers(const char* input, std::string& output) {
     bool replaced = false;
     __try {
-        replaced = ReplaceLifeProofProgressMarkers(input, output);
+        replaced = ReplaceProgressMarkers(input, output);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         Trace("ReplaceQuestHookProgressMarkers exception");
         output.clear();
