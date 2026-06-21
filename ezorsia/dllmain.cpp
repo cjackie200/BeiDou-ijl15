@@ -120,6 +120,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		HookCWvsApp__Dir_BackSlashToSlash(true);
 		HookCWvsApp__Dir_upDir(true);
 		Hookbstr_ctor(true);
+		Memory::SetHook(true, (void**)&ZXString_Assign, ZXString_Assign_Hook);
 		HookIWzFileSystem__Init(true);
 		HookIWzNameSpace__Mount(true);
 		HookCWvsApp__InitializeResMan(false); //experimental //ty to all the contributors of the ragezone release: Client load .img instead of .wz v62~v92

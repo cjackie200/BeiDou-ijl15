@@ -71,12 +71,24 @@ static _CWvsApp__Dir_upDir_t _CWvsApp__Dir_upDir_Hook = [](char* sDir) {
 
 typedef char*(__fastcall* _bstr_ctor_t)(void* pThis, void* edx, const char* str);
 static auto _bstr_ctor = reinterpret_cast<_bstr_ctor_t>(0x00406301);
+// Marker replacement moved to ZXString::Assign hook (below) to fix buffer overflow.
+// _bstr_ctor passes a WZ-preallocated buffer; ZXString::Assign receives the length
+// parameter and allocates correctly with Detours handling thiscall->fastcall conversion.
 static _bstr_ctor_t _bstr_ctor_Hook = [](void* pThis, void* edx, const char* str) {
-	std::string replaced;
-	if (ReplaceQuestHookProgressMarkers(str, replaced)) {
-		return _bstr_ctor(pThis, edx, replaced.c_str());
-	}
 	return _bstr_ctor(pThis, edx, str); };
+
+// ZXString<char>::Assign at 0x00414617 (v83, thiscall via Detours).
+// Replaces interaction-hook progress markers AND passes correct string length
+// so ZXString allocates/resizes its internal buffer to fit the replacement text.
+typedef int(__fastcall* ZXString_Assign_t)(void* pThis, void* edx, char* s, size_t n);
+static auto ZXString_Assign = reinterpret_cast<ZXString_Assign_t>(0x00414617);
+static ZXString_Assign_t ZXString_Assign_Hook = [](void* pThis, void* edx, char* s, size_t n) -> int {
+	std::string replaced;
+	if (s && ReplaceQuestHookProgressMarkers(s, replaced)) {
+		return ZXString_Assign(pThis, edx, (char*)replaced.c_str(), replaced.size());
+	}
+	return ZXString_Assign(pThis, edx, s, n);
+};
 
 //Ztl_bstr_t
 //Ztl_variant_t
