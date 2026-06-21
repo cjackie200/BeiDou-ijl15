@@ -1,5 +1,7 @@
 #pragma once
 #include "MapleClientCollectionTypes/ZXString.h"
+#include "QuestHook.h"
+#include <string>
 typedef void(__fastcall* _CWndCreateWnd_t)(void* pThis, void* edx, int nLeft, int nTop, int nWidth, int nHeight, int z, int bScreenCoord, void* esi, int bSetFocus);
 static auto _CWndCreateWnd = reinterpret_cast<_CWndCreateWnd_t>(0x009DE4D2); //thanks you teto for helping me on this learning journey
 static _CWndCreateWnd_t _CWndCreateWnd_Hook = [](void* pThis, void* edx, int nLeft, int nTop, int nWidth, int nHeight, int z, int bScreenCoord, void* esi, int bSetFocus)
@@ -70,6 +72,10 @@ static _CWvsApp__Dir_upDir_t _CWvsApp__Dir_upDir_Hook = [](char* sDir) {
 typedef char*(__fastcall* _bstr_ctor_t)(void* pThis, void* edx, const char* str);
 static auto _bstr_ctor = reinterpret_cast<_bstr_ctor_t>(0x00406301);
 static _bstr_ctor_t _bstr_ctor_Hook = [](void* pThis, void* edx, const char* str) {
+	std::string replaced;
+	if (ReplaceQuestHookProgressMarkers(str, replaced)) {
+		return _bstr_ctor(pThis, edx, replaced.c_str());
+	}
 	return _bstr_ctor(pThis, edx, str); };
 
 //Ztl_bstr_t

@@ -2,9 +2,11 @@
 #include "QuestHook.h"
 
 #include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -24,6 +26,7 @@ constexpr WORD kSendSetField = 0x007D;
 constexpr WORD kSendStatChanged = 0x001F;
 constexpr WORD kS2CInteractionHookRules = 0x1001;
 constexpr WORD kS2CInteractionHookResult = 0x1002;
+constexpr WORD kS2CInteractionHookProgress = 0x1004;
 constexpr DWORD kClientSocketPtr = 0x00BE7914;
 constexpr DWORD kQuestActionClickAddr = 0x00716FE1;
 
@@ -162,6 +165,9 @@ struct ActivePending {
     int requestId;
     int eventType;
     int expectedNpcId;
+    int questId;
+    int npcId;
+    int rawAction;
     PendingKind kind;
     PendingPacket packet;
     PendingLocalQuestAction localQuestAction;
@@ -193,6 +199,7 @@ static std::mutex g_stateMutex;
 static std::vector<InteractionHookRule> g_characterQuestRules;
 static std::vector<InteractionHookRule> g_mapNpcRules;
 static std::vector<InteractionHookRule> g_dialogTempRules;
+static std::unordered_map<int, std::string> g_lifeProofProgressTextByQuestId;
 static std::unordered_map<int, PendingRuleBatch> g_pendingRuleBatches;
 static ActivePending g_activePending{};
 static IgnoredQuestAction g_ignoreNextOutgoingQuestAction{};
@@ -207,6 +214,9 @@ static ULONGLONG g_expectedInteractionHookNpcTalkUntil = 0;
 static bool g_replayingLocalQuestAction = false;
 static std::atomic<int> g_nextRequestId{ 1 };
 static std::mutex g_traceMutex;
+static PVOID g_exceptionHandler = nullptr;
+static HANDLE g_keyTraceThread = nullptr;
+static std::atomic<bool> g_keyTraceRunning{ false };
 
 enum class IncomingResult {
     None,
@@ -234,6 +244,22 @@ static void WriteI32(std::vector<unsigned char>& out, int value) {
     out.push_back(static_cast<unsigned char>((value >> 8) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 16) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 24) & 0xFF));
+}
+
+static bool ReadPacketString(const unsigned char*& cursor, const unsigned char* end, std::string& out) {
+    if (cursor == nullptr || end == nullptr || cursor + 2 > end) {
+        return false;
+    }
+
+    const int length = ReadU16(cursor);
+    cursor += 2;
+    if (length < 0 || cursor + length > end) {
+        return false;
+    }
+
+    out.assign(reinterpret_cast<const char*>(cursor), static_cast<size_t>(length));
+    cursor += length;
+    return true;
 }
 
 static bool TryReadDword(DWORD address, DWORD& out) {
@@ -283,6 +309,132 @@ static void Trace(const char* format, ...) {
     va_start(args, format);
     TraceV(format, args);
     va_end(args);
+}
+
+static void TraceModuleForAddress(const char* label, DWORD address) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0) {
+        Trace("%s address=0x%08X module=<VirtualQuery failed>", label, address);
+        return;
+    }
+
+    char modulePath[MAX_PATH]{};
+    const DWORD moduleBase = reinterpret_cast<DWORD>(mbi.AllocationBase);
+    if (GetModuleFileNameA(reinterpret_cast<HMODULE>(moduleBase), modulePath, MAX_PATH) == 0) {
+        Trace("%s address=0x%08X moduleBase=0x%08X offset=0x%08X module=<unknown>",
+            label,
+            address,
+            moduleBase,
+            address - moduleBase);
+        return;
+    }
+
+    Trace("%s address=0x%08X moduleBase=0x%08X offset=0x%08X module=%s",
+        label,
+        address,
+        moduleBase,
+        address - moduleBase,
+        modulePath);
+}
+
+static void TraceStackDwords(DWORD esp) {
+    DWORD values[16]{};
+    bool ok = true;
+    __try {
+        const DWORD* stack = reinterpret_cast<const DWORD*>(esp);
+        for (int i = 0; i < 16; ++i) {
+            values[i] = stack[i];
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+
+    if (!ok) {
+        Trace("Crash stack esp=0x%08X read-failed", esp);
+        return;
+    }
+
+    Trace("Crash stack esp=0x%08X dwords=%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+        esp,
+        values[0], values[1], values[2], values[3],
+        values[4], values[5], values[6], values[7],
+        values[8], values[9], values[10], values[11],
+        values[12], values[13], values[14], values[15]);
+}
+
+static bool IsCrashLikeException(DWORD code) {
+    return code == EXCEPTION_ACCESS_VIOLATION
+        || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED
+        || code == EXCEPTION_DATATYPE_MISALIGNMENT
+        || code == EXCEPTION_FLT_DIVIDE_BY_ZERO
+        || code == EXCEPTION_ILLEGAL_INSTRUCTION
+        || code == EXCEPTION_IN_PAGE_ERROR
+        || code == EXCEPTION_INT_DIVIDE_BY_ZERO
+        || code == EXCEPTION_PRIV_INSTRUCTION
+        || code == EXCEPTION_STACK_OVERFLOW;
+}
+
+static LONG WINAPI QuestDiagnosticsExceptionHandler(EXCEPTION_POINTERS* info) {
+    if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (!IsCrashLikeException(code)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const DWORD exceptionAddress = reinterpret_cast<DWORD>(info->ExceptionRecord->ExceptionAddress);
+    const DWORD faultAddress = info->ExceptionRecord->NumberParameters > 1
+        ? static_cast<DWORD>(info->ExceptionRecord->ExceptionInformation[1])
+        : 0;
+
+    Trace("Crash exception code=0x%08X flags=0x%08X exceptionAddress=0x%08X faultAddress=0x%08X eip=0x%08X esp=0x%08X ebp=0x%08X eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X",
+        code,
+        info->ExceptionRecord->ExceptionFlags,
+        exceptionAddress,
+        faultAddress,
+        info->ContextRecord->Eip,
+        info->ContextRecord->Esp,
+        info->ContextRecord->Ebp,
+        info->ContextRecord->Eax,
+        info->ContextRecord->Ebx,
+        info->ContextRecord->Ecx,
+        info->ContextRecord->Edx,
+        info->ContextRecord->Esi,
+        info->ContextRecord->Edi);
+    TraceModuleForAddress("Crash eip-module", info->ContextRecord->Eip);
+    if (exceptionAddress != info->ContextRecord->Eip) {
+        TraceModuleForAddress("Crash exception-module", exceptionAddress);
+    }
+    if (faultAddress != 0) {
+        TraceModuleForAddress("Crash fault-module", faultAddress);
+    }
+    TraceStackDwords(info->ContextRecord->Esp);
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static DWORD WINAPI QuestKeyTraceThreadProc(LPVOID) {
+    bool qWasDown = false;
+    Trace("Quest diagnostics key trace thread started");
+    while (g_keyTraceRunning.load()) {
+        const bool qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
+        if (qDown != qWasDown) {
+            HWND foreground = GetForegroundWindow();
+            DWORD pid = 0;
+            GetWindowThreadProcessId(foreground, &pid);
+            Trace("KeyTrace Q %s hwnd=%p pid=%lu tick=%lu",
+                qDown ? "down" : "up",
+                foreground,
+                static_cast<unsigned long>(pid),
+                GetTickCount());
+            qWasDown = qDown;
+        }
+        Sleep(20);
+    }
+    Trace("Quest diagnostics key trace thread stopped");
+    return 0;
 }
 
 static const char* ScopeName(int scope) {
@@ -381,6 +533,7 @@ static void ClearAllRulesLocked() {
     g_characterQuestRules.clear();
     g_mapNpcRules.clear();
     g_dialogTempRules.clear();
+    g_lifeProofProgressTextByQuestId.clear();
     g_pendingRuleBatches.clear();
     g_activePending = ActivePending{};
     ClearIgnoreNextQuestActionLocked();
@@ -391,6 +544,84 @@ static void ClearAllRulesLocked() {
         batchId = 0;
     }
     g_rulesLoaded = false;
+}
+
+static std::string ProgressTextForQuestLocked(int questId) {
+    auto it = g_lifeProofProgressTextByQuestId.find(questId);
+    if (it == g_lifeProofProgressTextByQuestId.end() || it->second.empty()) {
+        return "...";
+    }
+    return it->second;
+}
+
+static bool ParseLifeProofProgressMarker(const std::string& source, size_t prefixPos, int& questId,
+                                         size_t& markerEnd) {
+    static const std::string prefix = "@@BD_LP_PROGRESS:";
+    questId = 0;
+    markerEnd = std::string::npos;
+
+    size_t pos = prefixPos + prefix.size();
+    if (pos >= source.size() || !std::isdigit(static_cast<unsigned char>(source[pos]))) {
+        return false;
+    }
+
+    while (pos < source.size() && std::isdigit(static_cast<unsigned char>(source[pos]))) {
+        questId = questId * 10 + (source[pos] - '0');
+        ++pos;
+    }
+    if (questId <= 0 || pos + 2 > source.size() || source[pos] != '@' || source[pos + 1] != '@') {
+        return false;
+    }
+
+    markerEnd = pos + 2;
+    return true;
+}
+
+static bool ReplaceLifeProofProgressMarkers(const char* input, std::string& output) {
+    static const std::string prefix = "@@BD_LP_PROGRESS:";
+    if (input == nullptr) {
+        return false;
+    }
+
+    std::string source(input);
+    size_t searchFrom = 0;
+    bool replaced = false;
+    output.clear();
+    while (true) {
+        size_t markerStart = source.find(prefix, searchFrom);
+        if (markerStart == std::string::npos) {
+            output.append(source, searchFrom, std::string::npos);
+            break;
+        }
+
+        int questId = 0;
+        size_t markerEnd = std::string::npos;
+        if (!ParseLifeProofProgressMarker(source, markerStart, questId, markerEnd)) {
+            output.append(source, searchFrom, markerStart + prefix.size() - searchFrom);
+            searchFrom = markerStart + prefix.size();
+            continue;
+        }
+
+        std::string replacement;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            replacement = ProgressTextForQuestLocked(questId);
+        }
+        output.append(source, searchFrom, markerStart - searchFrom);
+        output.append(replacement);
+        Trace("LifeProof progress marker replaced questId=%d hit=%d text=%s",
+            questId,
+            replacement == "..." ? 0 : 1,
+            replacement.c_str());
+        searchFrom = markerEnd;
+        replaced = true;
+    }
+    if (replaced) {
+        Trace("LifeProof progress marker text source=%s output=%s",
+            source.c_str(),
+            output.c_str());
+    }
+    return replaced;
 }
 
 static void CleanupExpiredRuleBatchesLocked() {
@@ -928,7 +1159,7 @@ static void TrackDialogEndLocked() {
     }
     if (g_currentDialogContext == kDialogContextInteractionHook) {
         Trace("TrackDialogEnd context=INTERACTION_HOOK npcId=%d state=NONE", g_currentDialogNpcId);
-        StoreExpectedInteractionHookNpcTalkLocked(g_currentDialogNpcId);
+        ClearExpectedInteractionHookNpcTalkLocked();
         ClearDialogStateLocked();
         return;
     }
@@ -1033,6 +1264,9 @@ static StorePendingResult StorePendingPacket(int requestId, void* socket, void* 
     g_activePending.requestId = requestId;
     g_activePending.eventType = event.eventType;
     g_activePending.expectedNpcId = ExpectedNpcTalkAckId(event);
+    g_activePending.questId = event.questId;
+    g_activePending.npcId = event.clientNpcId;
+    g_activePending.rawAction = event.rawAction;
     g_activePending.kind = PendingKind::Packet;
     g_activePending.packet = std::move(pending);
     Trace("StorePendingPacket requestId=%d eventType=%d expectedNpcId=%d",
@@ -1062,6 +1296,8 @@ static bool TakePendingLocalQuestAction(int requestId, PendingLocalQuestAction& 
     return true;
 }
 
+static void StoreIgnoredQuestActionLocked(int questId, int npcId, int rawAction);
+
 static StorePendingResult StorePendingLocalQuestAction(int requestId, void* thisPtr, int arg,
                                                        const HookEvent& event) {
     if (thisPtr == nullptr) {
@@ -1078,6 +1314,9 @@ static StorePendingResult StorePendingLocalQuestAction(int requestId, void* this
     g_activePending.requestId = requestId;
     g_activePending.eventType = event.eventType;
     g_activePending.expectedNpcId = ExpectedNpcTalkAckId(event);
+    g_activePending.questId = event.questId;
+    g_activePending.npcId = event.clientNpcId;
+    g_activePending.rawAction = event.rawAction;
     g_activePending.kind = PendingKind::LocalQuestAction;
     g_activePending.localQuestAction = PendingLocalQuestAction{ thisPtr, arg };
     Trace("StorePendingLocalQuestAction requestId=%d eventType=%d expectedNpcId=%d",
@@ -1115,7 +1354,7 @@ static bool ReplayPendingLocalQuestAction(int requestId) {
     return true;
 }
 
-static void DropPendingPacket(int requestId) {
+static void DropPendingPacket(int requestId, bool suppressQuestAction = false) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_activePending.requestId != requestId) {
         Trace("DropPending ignored requestId=%d activeRequestId=%d",
@@ -1123,10 +1362,23 @@ static void DropPendingPacket(int requestId) {
             g_activePending.requestId);
         return;
     }
-    Trace("DropPending requestId=%d eventType=%d expectedNpcId=%d",
+    Trace("DropPending requestId=%d eventType=%d expectedNpcId=%d questId=%d npcId=%d rawAction=%d suppressQuestAction=%d",
         g_activePending.requestId,
         g_activePending.eventType,
-        g_activePending.expectedNpcId);
+        g_activePending.expectedNpcId,
+        g_activePending.questId,
+        g_activePending.npcId,
+        g_activePending.rawAction,
+        suppressQuestAction ? 1 : 0);
+    if (suppressQuestAction
+        && g_activePending.eventType == kEventQuestAction
+        && g_activePending.questId > 0
+        && g_activePending.rawAction > 0) {
+        StoreIgnoredQuestActionLocked(g_activePending.questId, g_activePending.npcId, g_activePending.rawAction);
+        if (g_activePending.expectedNpcId > 0) {
+            StoreExpectedInteractionHookNpcTalkLocked(g_activePending.expectedNpcId);
+        }
+    }
     ClearActivePendingLocked();
 }
 
@@ -1236,6 +1488,7 @@ static bool ShouldSkipOutgoingQuestHookForDialog(int questId, int npcId, int raw
             npcId,
             rawAction);
         ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
         ClearDialogStateLocked();
         return true;
     }
@@ -1243,13 +1496,15 @@ static bool ShouldSkipOutgoingQuestHookForDialog(int questId, int npcId, int raw
         return false;
     }
     if (g_currentDialogState == kDialogStateSuppressedAfterNativeNpc) {
-        Trace("Outgoing QUEST_ACTION ignored reason=suppressed-after-native-npc questId=%d npcId=%d rawAction=%d suppressedNpcId=%d",
+        Trace("Outgoing QUEST_ACTION released reason=suppressed-after-native-npc-mismatch questId=%d npcId=%d rawAction=%d suppressedNpcId=%d",
             questId,
             npcId,
             rawAction,
             g_currentDialogNpcId);
+        ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
         ClearDialogStateLocked();
-        return true;
+        return false;
     }
     Trace("Outgoing QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
@@ -1268,13 +1523,25 @@ static bool ShouldSkipLocalQuestHookForDialog(int questId, int npcId, int rawAct
         return false;
     }
     if (g_currentDialogState == kDialogStateSuppressedAfterNativeNpc) {
-        StoreIgnoredQuestActionLocked(questId, npcId, rawAction);
-        Trace("Local QUEST_ACTION ignored reason=suppressed-after-native-npc questId=%d npcId=%d rawAction=%d suppressedNpcId=%d",
+        if (MatchesIgnoredQuestActionLocked(questId, npcId, rawAction)) {
+            Trace("Local QUEST_ACTION ignored reason=ignore-next questId=%d npcId=%d rawAction=%d",
+                questId,
+                npcId,
+                rawAction);
+            ClearIgnoreNextQuestActionLocked();
+            ClearExpectedInteractionHookNpcTalkLocked();
+            ClearDialogStateLocked();
+            return true;
+        }
+        Trace("Local QUEST_ACTION released reason=suppressed-after-native-npc-mismatch questId=%d npcId=%d rawAction=%d suppressedNpcId=%d",
             questId,
             npcId,
             rawAction,
             g_currentDialogNpcId);
-        return true;
+        ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
+        ClearDialogStateLocked();
+        return false;
     }
     Trace("Local QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
@@ -1288,6 +1555,16 @@ static bool ShouldSkipLocalQuestHookForDialog(int questId, int npcId, int rawAct
 
 static bool PrepareLocalQuestHookInterceptLocked(int questId, int npcId, int rawAction) {
     CleanupExpiredIgnoredQuestActionLocked();
+    if (MatchesIgnoredQuestActionLocked(questId, npcId, rawAction)) {
+        Trace("Local QUEST_ACTION ignored reason=ignore-next questId=%d npcId=%d rawAction=%d",
+            questId,
+            npcId,
+            rawAction);
+        ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
+        ClearDialogStateLocked();
+        return false;
+    }
     if (g_currentDialogState == kDialogStateNone) {
         return true;
     }
@@ -1298,6 +1575,7 @@ static bool PrepareLocalQuestHookInterceptLocked(int questId, int npcId, int raw
             rawAction,
             g_currentDialogNpcId);
         ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
         ClearDialogStateLocked();
         return true;
     }
@@ -1456,7 +1734,7 @@ static bool TryInterceptQuestAction(void* socket, void* edx, COutPacket* packet)
     Trace("Outgoing QUEST_ACTION size=%lu action=%u questId=%d npcId=%d actionMask=%d questState=%d",
         packet->Size, nativeAction, questId, npcId, actionMask, questState);
     if (ShouldSkipOutgoingQuestHookForDialog(questId, npcId, static_cast<int>(nativeAction))) {
-        return false;
+        return true;
     }
 
     HookEvent event{};
@@ -1543,12 +1821,12 @@ static bool TryInterceptLocalQuestAction(void* thisPtr, int arg) {
         intercept ? 1 : 0);
     if (!intercept) {
         if (ShouldSkipLocalQuestHookForDialog(questId, npcId, nativeAction)) {
-            return false;
+            return true;
         }
         return false;
     }
     if (!PrepareLocalQuestHookIntercept(questId, npcId, nativeAction)) {
-        return false;
+        return true;
     }
 
     DWORD socketPtr = 0;
@@ -1600,7 +1878,69 @@ static bool HandleResult(const unsigned char* payload, unsigned long payloadSize
         }
         return true;
     }
-    DropPendingPacket(requestId);
+    DropPendingPacket(requestId, resultCode == kResultHandledDialog || resultCode == kResultHandledUpdate);
+    return true;
+}
+
+static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSize) {
+    constexpr int kMaxProgressEntries = 1000;
+    if (payload == nullptr || payloadSize < 8) {
+        Trace("ApplyProgress reject payloadSize=%lu reason=short", payloadSize);
+        return false;
+    }
+
+    const int version = ReadI32(payload);
+    const int count = ReadI32(payload + 4);
+    if (version != kVersion || count < 0 || count > kMaxProgressEntries) {
+        Trace("ApplyProgress reject version=%d count=%d", version, count);
+        return false;
+    }
+
+    const unsigned char* cursor = payload + 8;
+    const unsigned char* end = payload + payloadSize;
+    std::unordered_map<int, std::string> next;
+    for (int i = 0; i < count; ++i) {
+        if (cursor + 18 > end) {
+            Trace("ApplyProgress reject count=%d index=%d reason=entry-short", count, i);
+            return false;
+        }
+        const int questId = ReadI32(cursor);
+        cursor += 4;
+        const int state = ReadI32(cursor);
+        cursor += 4;
+        const int current = ReadI32(cursor);
+        cursor += 4;
+        const int required = ReadI32(cursor);
+        cursor += 4;
+
+        std::string text;
+        if (!ReadPacketString(cursor, end, text)) {
+            Trace("ApplyProgress reject questId=%d index=%d reason=text", questId, i);
+            return false;
+        }
+        if (questId <= 0) {
+            Trace("ApplyProgress reject questId=%d index=%d reason=quest", questId, i);
+            return false;
+        }
+        next[questId] = text;
+        Trace("ApplyProgress entry questId=%d state=%d current=%d required=%d text=%s",
+            questId,
+            state,
+            current,
+            required,
+            text.c_str());
+    }
+    if (cursor != end) {
+        Trace("ApplyProgress warning count=%d reason=trailing-bytes bytes=%lu",
+            count,
+            static_cast<unsigned long>(end - cursor));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_lifeProofProgressTextByQuestId.swap(next);
+    }
+    Trace("ApplyProgress ok count=%d", count);
     return true;
 }
 
@@ -1622,6 +1962,10 @@ static IncomingResult HandleIncomingAtOffset(CInPacket* packet, unsigned long he
     if (opcode == kS2CInteractionHookResult) {
         Trace("Incoming hook result opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         return HandleResult(payload, payloadSize) ? IncomingResult::Consumed : IncomingResult::None;
+    }
+    if (opcode == kS2CInteractionHookProgress) {
+        Trace("Incoming hook progress opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
+        return ApplyProgress(payload, payloadSize) ? IncomingResult::Consumed : IncomingResult::None;
     }
 
     TrackIncomingPacket(opcode, payload, payloadSize);
@@ -1672,6 +2016,18 @@ bool TryHandleQuestHookSend(void* socket, void* edx, void* packet) {
     return handled;
 }
 
+bool ReplaceQuestHookProgressMarkers(const char* input, std::string& output) {
+    bool replaced = false;
+    __try {
+        replaced = ReplaceLifeProofProgressMarkers(input, output);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Trace("ReplaceQuestHookProgressMarkers exception");
+        output.clear();
+        replaced = false;
+    }
+    return replaced;
+}
+
 static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
     if (g_replayingLocalQuestAction) {
         g_QuestActionClick(pThis, edx, arg);
@@ -1686,6 +2042,23 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
 void HookQuestActionClick(bool enable) {
     const bool ok = Memory::SetHook(enable, reinterpret_cast<void**>(&g_QuestActionClick), QuestActionClick_Hook);
     Trace("QuestActionClick hook enable=%d ok=%d addr=0x%08X", enable ? 1 : 0, ok ? 1 : 0, kQuestActionClickAddr);
+}
+
+void InstallQuestDiagnostics() {
+    if (g_exceptionHandler == nullptr) {
+        g_exceptionHandler = AddVectoredExceptionHandler(1, QuestDiagnosticsExceptionHandler);
+        Trace("Quest diagnostics exception handler installed ok=%d handler=%p",
+            g_exceptionHandler != nullptr ? 1 : 0,
+            g_exceptionHandler);
+    }
+
+    bool expected = false;
+    if (g_keyTraceRunning.compare_exchange_strong(expected, true)) {
+        g_keyTraceThread = CreateThread(nullptr, 0, QuestKeyTraceThreadProc, nullptr, 0, nullptr);
+        Trace("Quest diagnostics key trace create ok=%d thread=%p",
+            g_keyTraceThread != nullptr ? 1 : 0,
+            g_keyTraceThread);
+    }
 }
 
 void QuestHookTrace(const char* format, ...) {

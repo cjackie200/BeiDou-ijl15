@@ -71,6 +71,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		GetModuleFileNameA(hModule, modulePath, MAX_PATH);
 		GetCurrentDirectoryA(MAX_PATH, currentDirectory);
 		QuestHookTrace("DLL_PROCESS_ATTACH module=%s cwd=%s", modulePath, currentDirectory);
+		InstallQuestDiagnostics();
 		INIReader reader("config.ini");
 		if (reader.ParseError() == 0) {
 			Client::m_nGameWidth = reader.GetInteger("general", "width", 1280);
