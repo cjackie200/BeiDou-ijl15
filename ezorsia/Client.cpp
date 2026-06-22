@@ -1,13 +1,20 @@
 #include "stdafx.h"
 #include "AddyLocations.h"
 #include "codecaves.h"
+#include "MapleClientCollectionTypes/ZXString.h"
+#include "detours.h"
+#include "FixIme.h"
+#include "FixBuddy.h"
+#include "stdafx.h"
+#include "AddyLocations.h"
+#include "codecaves.h"
 
 int Client::m_nGameHeight = 720;
 int Client::m_nGameWidth = 1280;
 int Client::MsgAmount = 26;
 bool Client::WindowedMode = true;
 bool Client::RemoveLogos = true;
-double Client::setDamageCap = 199999.0;
+int Client::setDamageCap = 199999;
 bool Client::useTubi = false;
 int Client::speedMovementCap = 140;
 std::string Client::ServerIP_AddressFromINI = "127.0.0.1";
@@ -637,4 +644,359 @@ void Client::UpdateLogin() {	//un-used //may still contain some useful addresses
 	Memory::WriteByte(dwLoginFindIDBtn + 1, -127); // x-pos
 	Memory::WriteByte(dwLoginWebHomeBtn + 1, -127); // x-pos
 	Memory::WriteByte(dwLoginWebRegisterBtn + 1, -127); // x-pos
+}void Client::FixMouseWheel() {
+	Memory::CodeCave(fixMouseWheelHook, 0x009E8090, 5);
 }
+
+void Client::Chinese() {
+	if (Client::imeType == 0)
+	{
+		FixIme::HookOld();
+	}
+	else {
+		FixIme::HookNew();
+	}
+
+	FixBuddy::Hook();
+	if(SwitchChinese) {
+		//创建角色界面女
+		Memory::WriteString(0x00AF6D1C, "  女  ");
+		//创建角色界面男
+		Memory::WriteString(0x00AF6D24, " 男 ");
+
+		// 聊天栏选项
+		Memory::WriteString(0x00AF2B28, "对联盟     ");
+
+		// 有效期字体大小
+		Memory::WriteByte(0x008E55ED + 1, 0x0B);
+
+		// 属性位置字体大小
+		Memory::WriteByte(0x008E557A + 1, 0x0B);
+		Memory::WriteByte(0x008E565E + 1, 0x0B);
+
+		// 玩家名片 职业字体大小和位置
+		Memory::WriteByte(0x0090142E + 1, 0x5E); // 60->5E 位置上移
+		Memory::WriteByte(0x00901400 + 1, 1); // 字体type改为1 对应12号大小
+	}
+}
+
+void Client::LongQuickSlot() {
+	// CUIStatusBar::OnCreate
+	Memory::WriteByte(0x008D155C + 1, 0xF0); // Draw rest of quickslot bar
+	Memory::WriteByte(0x008D155C + 2, 0x03);
+	Memory::WriteByte(0x008D182E + 1, 0xF0); // Draw rest of hotkeys
+	Memory::WriteByte(0x008D182E + 2, 0x03);
+	Memory::WriteByte(0x008D1AC0 + 1, 0xF0); // Draw rest of cooldowns, who tf knows why. TY Rulax
+	Memory::WriteByte(0x008D1AC0 + 2, 0x03);
+
+	//----CQuickslotKeyMappedMan::CQuickslotKeyMappedMan?????
+	Memory::WriteInt(0x0072B7CE + 1, (DWORD)&Array_aDefaultQKM_0);
+	Memory::WriteInt(0x0072B8EB + 1, (DWORD)&Array_aDefaultQKM_0);
+
+	//----CUIStatusBar::CQuickSlot::CompareValidateFuncKeyMappedInfo
+	Memory::WriteByte(0x008DD916, 0x1A); // increase 8 --> 26
+	Memory::WriteByte(0x008DD8AD, 0x1A); // increase 8 --> 26
+	Memory::WriteByte(0x008DD8FD, 0xBB);
+	Memory::WriteInt(0x008DD8FD + 1, (DWORD)&Array_Expanded);
+	Memory::WriteByte(0x008DD8FD + 5, 0x90); //Errant byte
+	Memory::WriteByte(0x008DD898, 0xB8);
+	Memory::WriteInt(0x008DD898 + 1, (DWORD)&Array_Expanded);
+	Memory::WriteByte(0x008DD898 + 5, 0x90); //Errant Byte
+
+	//----CUIStatusBar::CQuickSlot::Draw
+	Memory::WriteByte(0x008DE75E + 3, 0x6C);
+	Memory::WriteByte(0x008DDF99, 0xB8);
+	Memory::WriteInt(0x008DDF99 + 1, (DWORD)&Array_Expanded);
+	Memory::FillBytes(0x008DDF99 + 5, 0x90, 3); // Nopping errant operations
+
+	//----CUIStatusBar::OnMouseMove
+	Memory::WriteByte(0x008D7F1E + 1, 0x34);
+	Memory::WriteByte(0x008D7F1E + 2, 0x85);
+	Memory::WriteInt(0x008D7F1E + 3, (DWORD)&Array_Expanded);
+
+	//----CUIStatusBar::CQuickSlot::GetPosByIndex
+	Memory::WriteInt(0x008DE94D + 2, (DWORD)&Array_ptShortKeyPos);
+	Memory::WriteInt(0x008DE955 + 2, (DWORD)&Array_ptShortKeyPos + 4);
+	Memory::WriteByte(0x008DE941 + 2, 0x1A); //change cmp 8 --> cmp 26
+
+	//CUIStatusBar::GetShortCutIndexByPos
+	Memory::WriteInt(0x008DE8F4 + 1, (DWORD)&Array_ptShortKeyPos_Fixed_Tooltips + 4);
+	Memory::WriteByte(0x008DE926 + 1, 0x3E);
+
+	//CUIStatusBar::CQuickSlot::DrawSkillCooltime
+	Memory::WriteByte(0x008E099F + 3, 0x1A);
+	Memory::WriteByte(0x008E069D, 0xBE);
+	Memory::WriteInt(0x008E069D + 1, (DWORD)&cooldown_Array); //Pass enlarged FFFFF array
+	Memory::WriteByte(0x008E069D + 5, 0x90); //Errant byte
+	Memory::WriteByte(0x008E06A3, 0xBF);
+	Memory::WriteInt(0x008E06A3 + 1, (DWORD)&Array_Expanded + 1);
+	Memory::WriteByte(0x008E06A3 + 5, 0x90);
+
+	//----CDraggableMenu::OnDropped
+	Memory::WriteByte(0x004F928A + 2, 0x1A); //change cmp 8 --> cmp 26
+	//----CDraggableMenu::MapFuncKey
+	Memory::WriteByte(0x004F93F9 + 2, 0x1A); //change cmp 8 --> cmp 26
+	//----CUIKeyConfig::OnDestroy
+	Memory::WriteByte(0x00833797 + 2, 0x6C); // Updates the offset to 108 (triple) (old->24h)
+	Memory::WriteByte(0x00833841 + 2, 0x6C); // Updates the offset to 108 (triple) (old->24h)
+	Memory::WriteByte(0x00833791 + 1, 0x68); // push 68h (triple)
+	Memory::WriteByte(0x0083383B + 1, 0x68); // push 68h (triple)
+	//----CUIKeyConfig::~CUIKeyConfig
+	Memory::WriteByte(0x0083287F + 2, 0x6C); // triple the base value at this hex (old->24h)
+	Memory::WriteByte(0x00832882 + 1, 0x68); // push 68h (triple)
+	//----CQuickslotKeyMappedMan::SaveQuickslotKeyMap
+	Memory::WriteByte(0x0072B8C0 + 2, 0x6C); // triple the base value at this hex (old->24h)
+	Memory::WriteByte(0x0072B8A0 + 1, 0x68); // push 68h, (triple) //CQuickslotKeyMappedMan::SaveQuickslotKeyMap
+	Memory::WriteByte(0x0072B8BD + 1, 0x68); // push 68h, (triple) //CQuickslotKeyMappedMan::SaveQuickslotKeyMap
+	//----CQuickslotKeyMappedMan::OnInit
+	Memory::WriteByte(0x0072B861 + 1, 0x68); // push 68h (triple) (these ones might have to be just 60)
+	Memory::WriteByte(0x0072B867 + 2, 0x6C); // triple the base value at this hex (old->24h)
+	//----CUIKeyConfig::CNoticeDlg::OnChildNotify????
+	Memory::WriteByte(0x00836A1E + 1, 0x68); // push 68h (triple)
+	Memory::WriteByte(0x00836A21 + 2, 0x6C); // triple the base value at this hex (old->24h)
+
+
+	// CODECAVES CLIENT EDITS ---- 
+	Memory::CodeCave(CompareValidateFuncKeyMappedInfo_cave, 0x8DD8B8, 5);
+	Memory::CodeCave(sub_9FA0CB_cave, 0x9FA0DB, 5);
+	Memory::CodeCave(sDefaultQuickslotKeyMap_cave, 0x72B7BC, 5);
+	Memory::CodeCave(DefaultQuickslotKeyMap_cave, 0x72B8E6, 5);
+	Memory::CodeCave(Restore_Array_Expanded, 0x008CFDFD, 6); //restores the skill array to 0s
+}
+
+void Client::FixDateFormat() {
+	if (SwitchChinese)
+	{
+		Memory::CodeCave(fixDateFormat, 0x008EBF57, 14); // StringPool 5273
+		Memory::CodeCave(fixDateFormat2, 0x008EBFA1, 14); // StringPool 655
+		Memory::CodeCave(fixDateFormat3, 0x008EC31A, 14); // StringPool 679
+		Memory::CodeCave(fixDateFormat4, 0x008EBF05, 14); // StringPool 3138
+	}
+}
+
+void Client::FixItemType() {
+	if (SwitchChinese)
+	{
+		Memory::CodeCave(getItemType1, 0x005CFA99, 15);
+		Memory::CodeCave(getItemType2, getItemType2Addr, 27);
+	}
+}
+
+DWORD Client::jumpCap = 123;
+
+void Client::JumpCap() {
+	Memory::CodeCave(customJumpCapHook1, 0x00780797, 10);
+	Memory::CodeCave(customJumpCapHook2, 0x008C42A3, 10);
+	Memory::CodeCave(customJumpCapHook3, 0x0094D942, 5);
+
+
+	Memory::WriteInt(0x009CC6F9 + 2, 0x00C1CF80);
+	if (climbSpeedAuto)
+	{
+		Memory::CodeCave(calcSpeedHook, 0x0094D93C, 6);
+	}
+	else {
+		Memory::WriteDouble(0x00C1CF80, climbSpeed * 3.0);
+	}
+}
+
+void Client::FixChatPosHook() {
+	// 修复聊天窗里的聊天信息偏下的问题
+	// Memory::WriteByte(0x008DD05A + 2, 0x4);
+	// Memory::WriteByte(0x008DD067 + 2, 0x3);
+	// 老方法导致收起聊天框时，显示的信息太偏下了
+	Memory::CodeCave(chatTextPos, 0x008DD06F, 6);
+}
+
+void Client::NoPassword() {
+	if (noPassword && debug)
+	{
+		Memory::WriteInt(0x00620F2F + 2, 0);
+	}
+}
+
+void Client::MoreHook() {
+	Memory::WriteInt(0x009A3D81, 480);
+	Memory::WriteByte(0x008EC4A7 + 1, 0x23);//装备属性页面的职业需求偏移战士
+	Memory::WriteByte(0x008EC53C + 1, 0x4D);//魔法师
+	Memory::WriteByte(0x008EC5D1 + 1, 0x7A);//弓箭手
+	Memory::WriteByte(0x008EC660 + 1, 0xA9);//飞侠
+	Memory::WriteByte(0x008EC6CF + 1, 0xC8);//海盗
+	Memory::CodeCave(faceHairCave, 0x005C94F3, 18);
+	Memory::CodeCave(canSendPkgTimeCave, 0x00485C28, 10);
+
+	if (talkRepeat)
+	{
+		Memory::WriteByte(0x004905ED + 1, 5);
+	}
+	Memory::WriteInt(0x0049064B + 2, talkTime);
+
+	if (setAtkOutCap > 999999)
+	{
+		Memory::WriteInt(0x008C485A + 1, 192); // 面板关闭按钮x
+		Memory::WriteInt(0x008C4AB3 + 1, 210); // 面板宽度
+		Memory::WriteInt(0x008C510A + 1, 218); // 详情面板宽度
+		Memory::WriteInt(0x008C4EA2 + 1, 210); // 详情面板初始x
+		Memory::WriteInt(0x008C5760 + 1, 210); // 详情面板切换x
+		Memory::WriteInt(0x008C7AD9 + 1, 185); // 加属性按钮x
+		Memory::WriteInt(0x008C2754 + 1, 195); // 详情面板关闭按钮x
+		Memory::WriteInt(0x008C6C72 + 1, 210); // 移动时详情面板x
+		Memory::CodeCave(apDetailBtn, 0x008C4E1B, 7); // 详情按钮
+	}
+	// 喇叭
+	Memory::WriteInt(0x0045A5BE + 1, 9999);
+
+
+	// 窗口保存位置
+	Memory::WriteInt(0x0049D218 + 1, m_nGameWidth - 16);// 窗口保存位置边界 x
+	Memory::WriteInt(0x0049D268 + 1, m_nGameHeight - 16);// 窗口保存位置边界 y
+}
+
+void Client::WorldMap()
+{
+
+	//解除世界大地图限制
+	// WorldMap Cap Increase
+	Memory::WriteByteArray(0x009EA030, world_cap_increase_array, sizeof(world_cap_increase_array));
+	//Memory::WriteByte(0x009EA032, 0xFF);//map
+	Memory::WriteInt(0x009EA030 + 2, 0xB4);
+
+	// 大地图居中
+	wordMapX = (m_nGameWidth - 666) / 2;
+	wordMapY = (m_nGameHeight - 524) / 2;
+	Memory::CodeCave(wordMapUIcc, 0x009EB594, 13);
+}
+
+constexpr DWORD refreshRateAfterSetResolutionRtn = 0x009F7B45;
+__declspec(naked) void refreshRateAfterSetResolution()
+{
+	__asm {
+		test ebx, ebx
+		je restore
+		mov byte ptr [ebx + 84h], 3Ch
+
+	restore:
+		lea eax, [ebp - 44h]
+		push eax
+		mov byte ptr [ebp - 4], 2
+		jmp refreshRateAfterSetResolutionRtn
+	}
+}
+
+void Client::RefreshRate()
+{
+	//屏幕刷新率大于60客户端无法启动
+	Memory::CodeCave(refreshRateAfterSetResolution, 0x009F7B3D, 8);
+}
+
+void Client::NoPSWDLogin()
+{
+	/**
+	*	服务端配置 no_password 可用于无密码登录   
+	*	客户端在触发登录协议之前会检测密码输入框控件中的输入长度   
+	*	如果密码框长度小于5会直接触发弹框密码失败。    
+	*	则如果想实现无校验登录还是需要手动在编辑框输入密码    
+	**/
+	Memory::PatchNop(0x00620EE8, 2);
+	Memory::PatchNop(0x00620F32, 6);
+}
+
+typedef unsigned int (__fastcall *pfunSendDeleteCharPacket)(void* This, int _);
+pfunSendDeleteCharPacket g_SendDeleteCharPacket = (pfunSendDeleteCharPacket)0x005F7C4A;
+unsigned int __fastcall SendDeleteCharPacket(unsigned char* This, int _)
+{  
+	unsigned char* teax = (unsigned char*)(((*(DWORD*)(This + 0x190)) * 0x2AC) + *(DWORD*)(This + 0x194));
+	int param2 = *(DWORD*)(teax + 0x3D);
+
+	typedef int(__cdecl* pfunCRole_decode2)(int, int);
+	pfunCRole_decode2 CRole_decode2 = (pfunCRole_decode2)0x004746DD;
+
+	int  msgid = 0;
+
+	int iret = CRole_decode2(((int)teax) + 0x39, param2);
+	if (iret == 1 || iret == 2)
+	{  
+		msgid = ((DWORD*)(This + 0x19C)[*(DWORD*)(This + 0x190)] != 0) ? 58 : 55;
+	}
+	else
+	{
+		msgid = ((DWORD*)(This + 0x19C)[*(DWORD*)(This + 0x190)] != 0) ? 57 : 13;
+	}
+	 
+
+	typedef int(__cdecl* pfunCLoginUtilDlg_YesNO)(int msgid, void* p);
+	pfunCLoginUtilDlg_YesNO CLoginUtilDlg_YesNO = (pfunCLoginUtilDlg_YesNO)0x0060EB58;
+	if (CLoginUtilDlg_YesNO(msgid, This + 500))
+	{ 
+		typedef int(__fastcall* pfunCOutPacket_def1)(void* pthis, int, ULONG buffer_size);
+		pfunCOutPacket_def1 COutPacket_def1 = (pfunCOutPacket_def1)0x006EC9CE;
+
+		struct  tagCOutPacket
+		{
+			int m_max_size;
+			char* m_buffer;
+			int m_unknow;
+			int m_unknow2;
+		};
+
+		tagCOutPacket op;
+		COutPacket_def1((void*)&op, 0, 23);
+
+		typedef int(__fastcall* pfunCOutPacket_EncodeStr)(void* pthis, int, const char*);
+		pfunCOutPacket_EncodeStr COutPacket_EncodeStr = (pfunCOutPacket_EncodeStr)0x0046F3CF;
+
+		ZXString<char> str;
+		COutPacket_EncodeStr((void*)&op, 0, str);
+
+		typedef int(__fastcall* pfunCOutPacket_Encode4)(void* pthis, int, unsigned int value);
+		pfunCOutPacket_Encode4 COutPacket_Encode4 = (pfunCOutPacket_Encode4)0x004065A6;
+
+		COutPacket_Encode4((void*)&op, 0, *(DWORD*)teax);
+
+		typedef void(__fastcall* pfunCLoginSendRequest)(void* pthis, int, void* value);
+		pfunCLoginSendRequest CLoginSendRequest = (pfunCLoginSendRequest)0x005F6932;
+
+		CLoginSendRequest(This, 0, (void*)&op);
+		if (*(DWORD*)0x00BEDA4C)
+		{
+			*(DWORD*)(This + 0x100) = -1;
+
+			typedef void (__fastcall *pfunCUIAvatarSelectCharacter)(void* This, int, DWORD);
+			pfunCUIAvatarSelectCharacter CUIAvatarSelectCharacter = (pfunCUIAvatarSelectCharacter)0x0060599B;
+
+			//CUIAvatarSelectCharacter((void*)0x00BEDA4C, 0, 0x0FFFFFFFF);
+		}
+
+		typedef int* (__fastcall* pfunsub_428712)(void* This, int _, int p);
+		pfunsub_428712 sub_428712 = (pfunsub_428712)0x00428712;
+
+		sub_428712(This + 0x1CC, 0, 0);
+		sub_428712(This + 0x1D0, 0, 0);
+	}
+
+	return 0;
+}
+
+void Client::DeleteChar()
+{
+	//客户端绕过PIN删除角色 
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach((LPVOID*)&g_SendDeleteCharPacket, SendDeleteCharPacket);
+	DetourTransactionCommit();
+}
+int Client::setMAtkCap = 1999;
+int Client::setAccCap = 999;
+int Client::setAvdCap = 999;
+double Client::setAtkOutCap = 199999;
+bool Client::bigLoginFrame = false;
+bool Client::SwitchChinese = false;
+bool Client::debug = false;
+bool Client::noPassword = false;
+bool Client::climbSpeedAuto = false;
+float Client::climbSpeed = 1.0;
+unsigned char Client::imeType = 1;
+int Client::serverIP_Port = 8484;
+bool Client::talkRepeat = false;
+int Client::talkTime = 2000;
+bool Client::CustomLoginFrame = true;

@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "Memory.h"
 #include "detours.h"
-//#pragma optimize("", off) //non-optimized function for testing purposes
+
 bool Memory::UseVirtuProtect = true;
 
 bool Memory::SetHook(bool attach, void** ptrTarget, void* ptrDetour)
@@ -38,6 +38,29 @@ void Memory::FillBytes(const DWORD dwOriginAddress, const unsigned char ucValue,
         VirtualProtect((LPVOID)dwOriginAddress, nCount, dwOldProtect, &dwOldProtect);
     }
     else { memset((void*)dwOriginAddress, ucValue, nCount); }
+}
+
+/*
+ 注意: 原文本长度>=新文本长度
+ 示例: Memory::ReplaceString(0x00B3C158, "双击发送消息", "Double-click to send a note.");
+*/
+void Memory::ReplaceString(const DWORD dwOriginAddress, const char* sContent, const char* oContent)
+{
+    WriteString(dwOriginAddress, sContent);
+    const size_t sSize = strlen(sContent);
+    const size_t oSize = strlen(oContent);
+    FillBytes(dwOriginAddress + sSize, 0, oSize + 1 - sSize);
+}
+
+/*
+oSize: 要填充的长度，>=填充的字符串长度，中文=2个长度
+示例: Memory::WriteString(0x00AF2B28, "对联盟", 11);
+*/
+void Memory::WriteString(const DWORD dwOriginAddress, const char* sContent, const int oSize)
+{
+    WriteString(dwOriginAddress, sContent);
+    const size_t sSize = strlen(sContent);
+    FillBytes(dwOriginAddress + sSize, 0, oSize + 1 - sSize);
 }
 
 void Memory::WriteString(const DWORD dwOriginAddress, const char* sContent) {
@@ -92,7 +115,6 @@ void Memory::WriteDouble(const DWORD dwOriginAddress, const double dwValue) {
 }
 
 void Memory::WriteByteArray(const DWORD dwOriginAddress, unsigned char* ucValue, const int ucValueSize) {
-    const size_t nSize = sizeof(ucValue);
     if (UseVirtuProtect) {
         for (int i = 0; i < ucValueSize; i++) {
             const DWORD newAddr = dwOriginAddress + i;
@@ -114,4 +136,3 @@ void Memory::CodeCave(void* ptrCodeCave, const DWORD dwOriginAddress, const int 
 		WriteInt(dwOriginAddress + 1, (int)(((int)ptrCodeCave - (int)dwOriginAddress) - 5)); // [jmp(1 byte)][address(4 bytes)] //this means you need to clear a space of at least 5 bytes (nNOPCount bytes)
 	} __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
-//#pragma optimize("", on)

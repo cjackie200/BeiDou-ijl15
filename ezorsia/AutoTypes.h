@@ -1891,3 +1891,15 @@ static auto _sub_9F4E54 = reinterpret_cast<_sub_9F4E54_t>(0x009F4E54);//unsigned
 	//	return 1;
 
 //auto physicalSpaceInstance = *reinterpret_cast<CWvsPhysicalSpace2D**>(0xBAADF00D); get instance example courtesy of yeehaw
+// === BeiDou: ZXString::Assign hook for quest progress markers ===
+typedef int(__fastcall* ZXString_Assign_t)(void* pThis, void* edx, char* s, size_t n);
+
+// BeiDou: ZXString::Assign hook instance for quest progress markers
+static auto ZXString_Assign = reinterpret_cast<ZXString_Assign_t>(0x00414617);
+static ZXString_Assign_t ZXString_Assign_Hook = [](void* pThis, void* edx, char* s, size_t n) -> int {
+	std::string replaced;
+	if (s && ReplaceQuestHookProgressMarkers(s, replaced)) {
+		return ZXString_Assign(pThis, edx, (char*)replaced.c_str(), replaced.size());
+	}
+	return ZXString_Assign(pThis, edx, s, n);
+};

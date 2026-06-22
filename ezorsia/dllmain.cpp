@@ -2,6 +2,12 @@
 #include "stdafx.h"
 #include "ReplacementFuncs.h"
 #include "dinput8.h"
+#include "BossHP.h"
+#include "HpMpAlert.h"
+#include "QuestHook.h"
+#include "SelectCharMacFix.h"
+#include "FixBuddy.h"
+#include "FixIme.h"
 
 //NOTE: ideally order hooks by execution order in exe to best bypass themida but im lazy...
 
@@ -73,6 +79,25 @@ void MainFunc() {
 	Client::UpdateResolution();
 
 	dinput8::CreateHook();	std::cout << "dinput8 hook initialized" << std::endl;
+
+	// === BeiDou features ===
+	Memory::SetHook(true, (void**)&ZXString_Assign, ZXString_Assign_Hook);
+	InstallQuestDiagnostics();
+	HookQuestActionClick(true);
+	BossHP::Hook();
+	Client::FixMouseWheel();
+	Client::Chinese();
+	Client::LongQuickSlot();
+	Client::FixDateFormat();
+	Client::FixItemType();
+	Client::JumpCap();
+	Client::FixChatPosHook();
+	Client::NoPassword();
+	Client::MoreHook();
+	Client::WorldMap();
+	Client::RefreshRate();
+	Client::NoPSWDLogin();
+	Client::DeleteChar();
 }
 
 //gatekeeper thread
@@ -104,6 +129,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		//INITWINHOOK("KERNEL32", "GetProcAddress", GetProcAddress_Original, GetProcAddress_t, WinHooks::GetProcAddress_Hook); //Used to map out imports used by MapleStory
 		//INITWINHOOK("NTDLL", "NtTerminateProcess", NtTerminateProcess_Original, NtTerminateProcess_t, WinHooks::NtTerminateProcess_Hook); //We use this function to track what memory addresses are killing the process,There are more ways that Maple kills itself, but this is one of them.
 		
+			// === BeiDou hooks ===
+			HookHpMpAlertRecv(true);
+			HookSelectCharMacFix(true);
 		DisableThreadLibraryCalls(hModule);
 		CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&MainProc, NULL, 0, 0);
 		break;

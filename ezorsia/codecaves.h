@@ -635,3 +635,690 @@ __declspec(naked) void testingCodeCave4() {
 	}
 }
 
+__declspec(naked) void fixMouseWheelHook() {
+	__asm {
+		// is mouse wheel
+		cmp eax, 522
+		je next
+		mov eax, dword ptr ds : [edi]
+		shr eax, 0x10
+		push eax
+		movzx eax, word ptr ds : [edi]
+		push eax
+fixMouseWheelCallSetCursorPosAddr:
+fixMouseWheelRetJmpAddr:
+		call fixMouseWheelCallSetCursorPosAddr
+		next :
+		jmp[fixMouseWheelRetJmpAddr]
+	}
+}
+
+// ARRAYS ---- 长键盘开始
+unsigned char Array_aDefaultQKM[] = {
+	42, 0, 0, 0,
+	82, 0, 0, 0,
+	71, 0, 0, 0,
+	73, 0, 0, 0,
+	2, 0, 0, 0,
+	3, 0, 0, 0,
+	4, 0, 0, 0,
+	5, 0, 0, 0,
+	6, 0, 0, 0,
+	30, 0, 0, 0,
+	31, 0, 0, 0,
+	32, 0, 0, 0,
+	33, 0, 0, 0,
+	29, 0, 0, 0,
+	83, 0, 0, 0,
+	79, 0, 0, 0,
+	81, 0, 0, 0,
+	16, 0, 0, 0,
+	17, 0, 0, 0,
+	18, 0, 0, 0,
+	19, 0, 0, 0,
+	20, 0, 0, 0,
+	44, 0, 0, 0,
+	45, 0, 0, 0,
+	46, 0, 0, 0,
+	47, 0, 0, 0,
+	52, 0, 0, 0
+};
+
+// 0x00BE2DB0 confirmed, s_ptShortKeyPos
+unsigned char Array_ptShortKeyPos[] = {
+	7, 0, 0, 0,
+	8, 0, 0, 0,
+	42, 0, 0, 0,
+	8, 0, 0, 0,
+	77, 0, 0, 0,
+	8, 0, 0, 0,
+	112, 0, 0, 0,
+	8, 0, 0, 0,
+	147, 0, 0, 0,
+	8, 0, 0, 0,
+	182, 0, 0, 0,
+	8, 0, 0, 0,
+	217, 0, 0, 0,
+	8, 0, 0, 0,
+	252, 0, 0, 0,
+	8, 0, 0, 0,
+	287, 1, 0, 0,
+	8, 0, 0, 0,
+	322, 1, 0, 0,
+	8, 0, 0, 0,
+	357, 1, 0, 0,
+	8, 0, 0, 0,
+	392, 1, 0, 0,
+	8, 0, 0, 0,
+	427, 1, 0, 0,
+	8, 0, 0, 0,
+	7, 0, 0, 0,
+	41, 0, 0, 0,
+	42, 0, 0, 0,
+	41, 0, 0, 0,
+	77, 0, 0, 0,
+	41, 0, 0, 0,
+	112, 0, 0, 0,
+	41, 0, 0, 0,
+	147, 0, 0, 0,
+	41, 0, 0, 0,
+	182, 0, 0, 0,
+	41, 0, 0, 0,
+	217, 0, 0, 0,
+	41, 0, 0, 0,
+	252, 0, 0, 0,
+	41, 0, 0, 0,
+	287, 1, 0, 0,
+	41, 0, 0, 0,
+	322, 1, 0, 0,
+	41, 0, 0, 0,
+	357, 1, 0, 0,
+	41, 0, 0, 0,
+	392, 1, 0, 0,
+	41, 0, 0, 0,
+	427, 1, 0, 0,
+	41, 0, 0, 0
+};
+//Variant of Array_ptShortKeyPos
+unsigned char Array_ptShortKeyPos_Fixed_Tooltips[] = {
+	7,0,0,0,0,0,0,0,42,0,0,0,0,0,0,0,77,0,0,0,0,0,0,0,112,0,0,0,0,0,0,0,147,0,0,0,0,0,0,0,182,0,0,0,0,0,0,0,217,0,0,0,0,0,0,0,252,0,0,0,0,0,0,0,287,1,0,0,0,0,0,0,322,1,0,0,0,0,0,0,357,1,0,0,0,0,0,0,392,1,0,0,0,0,0,0,427,1,0,0,0,0,0,0,7,0,0,0,33,0,0,0,42,0,0,0,33,0,0,0,77,0,0,0,33,0,0,0,112,0,0,0,33,0,0,0,147,0,0,0,33,0,0,0,182,0,0,0,33,0,0,0,217,0,0,0,33,0,0,0,252,0,0,0,33,0,0,0,287,1,0,0,33,0,0,0,322,1,0,0,33,0,0,0,357,1,0,0,33,0,0,0,392,1,0,0,33,0,0,0,427,1,0,0,33,0,0,0
+};// This array will fix the janky offset of the tooltips
+// s_aDefaultQKM_0
+unsigned char Array_aDefaultQKM_0[] = {
+	42, 0, 0, 0,
+	82, 0, 0, 0,
+	71, 0, 0, 0,
+	73, 0, 0, 0, //4
+	29, 0, 0, 0,
+	83, 0, 0, 0,
+	79, 0, 0, 0,
+	81, 0, 0, 0, //8
+	42, 0, 0, 0,
+	82, 0, 0, 0,
+	71, 0, 0, 0,
+	73, 0, 0, 0, //12
+	29, 0, 0, 0,
+	83, 0, 0, 0,
+	79, 0, 0, 0,
+	81, 0, 0, 0, //16
+	84, 0, 0, 0,
+	85, 0, 0, 0,
+	86, 0, 0, 0,
+	87, 0, 0, 0, //20 
+	88, 0, 0, 0,
+	89, 0, 0, 0,
+	29, 0, 0, 0,
+	29, 0, 0, 0, //24
+	29, 0, 0, 0,
+	29, 0, 0, 0,
+	29, 0, 0, 0,
+};
+
+unsigned char Array_Expanded[312] = { 4, 4, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 0, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 1, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 2, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 3, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 5, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 6, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 7, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 8, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 10, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 11, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 12, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 13, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 14, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 15, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 16, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 17, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 23, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 24, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 25, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 26, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	4, 27, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	5, 50, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	5, 51, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	5, 52, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+	5, 53, 0, 0,
+	0, 0, 0, 0,
+	0, 0, 0, 0 };
+
+unsigned char Array_Expanded_Testing_Cooldown_fix[312] = { 0 };
+
+unsigned char cooldown_Array[124] = { 255, 255, 255, 255, 255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255,255, 255, 255, 255 };
+
+
+// CODECAVES --- 
+DWORD Array_aDefaultQKM_Address = (DWORD)&Array_aDefaultQKM;
+DWORD Array_mystery_Address = (DWORD)&Array_Expanded;
+DWORD Array_mystery_Address_plus = (DWORD)&Array_Expanded + 1;
+DWORD cooldown_Array_Address = (DWORD)&cooldown_Array;
+DWORD Array_Expanded_Testing_Cooldown_fix_Address = (DWORD)&Array_Expanded_Testing_Cooldown_fix;
+
+DWORD CompareValidate_Retn = 0x8DD8BD;
+_declspec(naked) void CompareValidateFuncKeyMappedInfo_cave()
+{
+	_asm
+	{
+		push 0x138;
+		push 0x0;
+		push eax;
+		pushad;
+		popad;
+		jmp CompareValidate_Retn
+			//push 0x8DD8BD;
+			//ret;
+	}
+}
+
+DWORD sub_9FA0CB_cave_retn_1 = 0x9FA0E1;
+_declspec(naked) void sub_9FA0CB_cave()
+{
+	_asm {
+		test eax, eax;
+		jne label;
+		push 0xD4;
+		pushad;
+		popad;
+		// -> ZAllocEx<ZAllocAnonSelector>::Alloc(ZAllocEx<ZAllocAnonSelector>::_s_alloc, 0x44u);
+		//push 0x9FA0E1;
+		//ret;
+		jmp sub_9FA0CB_cave_retn_1
+			label :
+		push 0x138;
+		push 0x0;
+		push eax;
+		pushad;
+		popad;
+		// -> memset(this + 0xD20, 0, 0x60u);
+		//push 0x8DD8BD;
+		//ret;
+		jmp CompareValidate_Retn
+	}
+}
+//DWORD sDefaultQuickslotKeyMap_cave_retn = 0x72B7C2;
+_declspec(naked) void sDefaultQuickslotKeyMap_cave()
+{
+	_asm {
+		push ebx;
+		push esi;
+		push edi;
+		xor edx, edx;
+		mov ebx, ecx;
+		call label;
+		nop;
+		lea edi, dword ptr ds : [ebx + 0x4] ;
+		mov ecx, 0x1A;
+		mov esi, Array_aDefaultQKM_Address;
+		rep movsd;
+		lea edi, dword ptr ds : [ebx + 0x6C] ;
+		mov ecx, 0x1A;
+		mov esi, Array_aDefaultQKM_Address;
+		rep movsd;
+		pop edi;
+		pop esi;
+		pop ebx;
+		ret;
+		// 0xBF8EE8
+	label:
+		push esi;
+		mov esi, ecx;
+		lea eax, dword ptr ds : [esi + 0x4] ;
+		// -> _DWORD *__fastcall sub_72B7BC(_DWORD *a1)
+		push 0x72B7C2;
+		ret;
+		//jmp sDefaultQuickslotKeyMap_cave_retn
+	}
+}
+_declspec(naked) void DefaultQuickslotKeyMap_cave()
+{
+	_asm {
+		push esi;
+		push edi;
+		lea eax, dword ptr ds : [ecx + 0x4] ;
+		mov esi, Array_aDefaultQKM_Address;
+		mov ecx, 0x1A;
+		mov edi, eax;
+		rep movsd;
+		pop edi;
+		pop esi;
+		ret;
+	}
+}
+_declspec(naked) void Restore_Array_Expanded() //Thank you Max
+{
+	_asm {
+		lea eax, [esi + 0D7Ch]
+		push esi
+		push edi
+		push ecx
+		mov esi, [Array_Expanded_Testing_Cooldown_fix_Address]
+		mov edi, Array_mystery_Address
+		mov ecx, 78
+		rep movsd
+		pop ecx
+		pop edi
+		pop esi
+		push 0x008CFE03;
+		ret;
+	}
+}
+// 长键盘结束
+
+
+DWORD fixDateFormatRtnAddr = 0x008EBF65;
+__declspec(naked) void fixDateFormat() {
+	__asm {
+		movzx   ecx, word ptr[ebp - 16h]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ah]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ch]
+		jmp fixDateFormatRtnAddr
+	}
+}
+DWORD fixDateFormat2RtnAddr = 0x008EBFAF;
+__declspec(naked) void fixDateFormat2() {
+	__asm {
+		movzx   ecx, word ptr[ebp - 16h]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ah]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ch]
+		jmp fixDateFormat2RtnAddr
+	}
+}
+DWORD fixDateFormat3RtnAddr = 0x008EC328;
+__declspec(naked) void fixDateFormat3() {
+	__asm {
+		movzx   ecx, word ptr[ebp - 1Eh]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 22h]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 24h]
+		jmp fixDateFormat3RtnAddr
+	}
+}
+DWORD fixDateFormat4RtnAddr = 0x008EBF13;
+__declspec(naked) void fixDateFormat4() {
+	__asm {
+		movzx   ecx, word ptr[ebp - 16h]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ah]
+		push    ecx
+		movzx   ecx, word ptr[ebp - 1Ch]
+		jmp fixDateFormat4RtnAddr
+	}
+}
+
+DWORD getItemType2Addr = 0x005CFAC2;
+__declspec(naked) void getItemType1() {
+	__asm {
+		jmp getItemType2Addr
+	}
+}
+
+DWORD getItemType2ErrRtnAddr = 0x005CFAA8;
+DWORD getItemType2RtnAddr = 0x005CFADD;
+__declspec(naked) void getItemType2() {
+	__asm {
+		dec eax
+		jz label_eqp
+		dec eax
+		jz label_use
+		dec eax
+		jz label_ins
+		dec eax
+		jz label_etc
+		dec eax
+		jz label_cash
+		jmp getItemType2ErrRtnAddr
+	label_cash:
+		push 0x159C
+		jmp getItemType2RtnAddr
+	label_etc:
+		push 0x6DD
+		jmp getItemType2RtnAddr
+	label_ins:
+		push 0x0B
+		jmp getItemType2RtnAddr
+	label_use:
+		push 0x6E3
+		jmp getItemType2RtnAddr
+	label_eqp:
+		push 0x6D9
+		jmp getItemType2RtnAddr
+	}
+}
+
+const DWORD back1 = 0x007807A1;
+__declspec(naked) void customJumpCapHook1()
+{
+	__asm {
+		cmp eax, Client::jumpCap
+		jl label
+		push Client::jumpCap
+		pop eax
+	label:
+		mov edx, edi
+		jmp[back1]
+	}
+}
+
+
+const DWORD back2 = 0x008C42AD;
+const DWORD back3 = 0x008C42AF;
+__declspec(naked) void customJumpCapHook2()
+{
+	__asm {
+		cmp eax, Client::jumpCap
+		jle label
+		push Client::jumpCap
+		pop edi
+		jmp[back3]
+		label:
+		jmp[back2]
+	}
+}
+
+const DWORD back4 = 0x0094D947;
+__declspec(naked) void customJumpCapHook3()
+{
+	__asm {
+		push Client::jumpCap
+		pop ecx
+		cmp eax, ecx
+		jmp[back4]
+	}
+}
+
+const DWORD chatTextPosRtn = 0x008DD075;
+__declspec(naked) void chatTextPos()
+{
+	__asm {
+		add eax, [edi + 0CFCh]
+		cmp[edi + 0D00h], 3
+		jz label_type3
+		cmp[edi + 0D00h], 2
+		jz label_type2
+
+		label_type1 :        // 状态1 收缩
+		sub eax, 1
+		jmp label_rtn
+
+		label_type2 :        // 状态2 收缩 + 输入
+		jmp label_rtn
+
+		label_type3 :        // 状态3 展开
+		sub eax, 2
+
+		label_rtn :
+		jmp chatTextPosRtn
+	}
+}
+
+int curSpeed = 100;
+void calcClimbSpeed() {
+	int speed = curSpeed;
+	speed = speed < 80 ? 80 : speed;
+	speed = speed > Client::speedMovementCap ? Client::speedMovementCap : speed;
+
+	double climbingSpeed = Client::climbSpeed;
+	climbingSpeed = climbingSpeed <= 1.0 ? 1.0 : climbingSpeed;
+	double curClimbSpeed = 3.0 * speed * climbingSpeed / 100;
+	Memory::WriteDouble(0x00C1CF80, curClimbSpeed);
+}
+
+DWORD calcSpeedHookRtn = 0x0094D942;
+__declspec(naked) void calcSpeedHook()
+{
+	__asm {
+		push eax
+		mov eax, [ebp - 10h]
+		mov curSpeed, eax
+		call calcClimbSpeed
+		pop eax
+		cmp     eax, edi
+		jg label_return
+		mov     eax, edi
+
+		label_return :
+		jmp calcSpeedHookRtn
+	}
+}
+
+DWORD faceRtn = 0x005C95BF;
+DWORD hairRtn = 0x005C958D;
+DWORD faceHairCaveRtn = 0x005C9505;
+__declspec(naked) void faceHairCave()
+{
+	__asm {
+		cmp  eax, 2
+		jz label_face
+		cmp  eax, 3
+		jz label_hair
+		cmp  eax, 4
+		jz label_hair
+		cmp  eax, 5
+		jz label_face
+		cmp  eax, 6
+		jz label_hair
+
+		jmp faceHairCaveRtn
+
+		label_face:
+		jmp faceRtn
+
+		label_hair:
+		jmp hairRtn
+	}
+}
+
+DWORD canSendPkgTimeCaveRtn = 0x00485C32;
+__declspec(naked) void canSendPkgTimeCave()
+{
+	__asm {
+		sub eax, [esi + 20A8h]
+		cmp eax, 200
+		jmp canSendPkgTimeCaveRtn
+	}
+}
+
+DWORD apDetailBtnRtn = 0x008C4E22;
+__declspec(naked) void apDetailBtn()
+{
+	__asm {
+		push    144h
+		push    99h
+		jmp apDetailBtnRtn
+	}
+}
+
+int darkCircleX;
+int darkCircleY;
+constexpr DWORD darkMap1ccRtn = 0x0055BEEF;
+__declspec(naked) void darkMap1cc() {
+	__asm {
+		add edx, darkCircleX
+		add ecx, darkCircleY
+		jmp darkMap1ccRtn
+	}
+}
+constexpr DWORD darkMap2ccRtn = 0x0055C08B;
+__declspec(naked) void darkMap2cc() {
+	__asm {
+		add eax, darkCircleY
+		push eax
+		mov eax, [ebp - 3Ch]
+		add eax, darkCircleX
+		jmp darkMap2ccRtn
+	}
+}
+constexpr DWORD darkMap3ccRtn = 0x0055C1D2;
+__declspec(naked) void darkMap3cc() {
+	__asm {
+		add eax, darkCircleY
+		push edi
+		push eax
+		mov eax, [ebp - 3Ch]
+		add eax, darkCircleX
+		jmp darkMap3ccRtn
+	}
+}
+
+unsigned char world_cap_increase_array[] = { 0x81, 0xFE };//129~254
+
+
+int wordMapX, wordMapY;
+DWORD wordMapUIccRtn = 0x009EB5A1;
+__declspec(naked) void wordMapUIcc()
+{
+	__asm {
+		push 20Ch
+		push 29Ah
+		push wordMapY
+		push wordMapX
+		jmp wordMapUIccRtn
+	}
+}
+
+/* 修复技能描述中文换行乱码的问题 */
+constexpr int kSkillTooltipLineBytes = 55;
+constexpr int kSkillTooltipScanBytes = 60;
+
+inline bool IsGbkLeadByte(unsigned char value) {
+	return value >= 0x81 && value <= 0xFE;
+}
+
+inline bool IsGbkTrailByte(unsigned char value) {
+	return value >= 0x40 && value <= 0xFE && value != 0x7F;
+}
+
+int charLen = kSkillTooltipLineBytes;
+void calcCharLen(const char* word)
+{
+	charLen = kSkillTooltipLineBytes;
+	if (word == nullptr || *word == '\0')
+	{
+		return;
+	}
+
+	const std::string str(word);
+	if (str.length() <= static_cast<size_t>(kSkillTooltipLineBytes))
+	{
+		return;
+	}
+
+	const size_t scanLimit = str.length() < static_cast<size_t>(kSkillTooltipScanBytes)
+		? str.length()
+		: static_cast<size_t>(kSkillTooltipScanBytes);
+
+	size_t i = 0;
+	while (i < scanLimit)
+	{
+		const unsigned char firstByte = static_cast<unsigned char>(str[i]);
+		size_t step = 1;
+		if (IsGbkLeadByte(firstByte) && (i + 1) < scanLimit)
+		{
+			const unsigned char secondByte = static_cast<unsigned char>(str[i + 1]);
+			if (IsGbkTrailByte(secondByte))
+			{
+				step = 2;
+			}
+		}
+
+		const size_t nextBoundary = i + step;
+		if (nextBoundary >= static_cast<size_t>(kSkillTooltipLineBytes))
+		{
+			charLen = static_cast<int>(nextBoundary);
+			return;
+		}
+
+		i = nextBoundary;
+	}
+}
+
+constexpr DWORD skillToolTipNewRtn = 0x008F3844;
+__declspec(naked) void skillToolTipNew()
+{
+	__asm {
+		mov eax, [ebp + 0Ch]
+		push eax
+		call calcCharLen
+		pop eax
+		mov eax, charLen
+		mov[ebp - 1Ch], eax
+		lea eax, [ebp - 30h]
+		jmp skillToolTipNewRtn
+	}
+}DWORD fixMouseWheelCallSetCursorPosAddr = 0x005A8A6D;
