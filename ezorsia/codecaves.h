@@ -1,4 +1,29 @@
 #pragma once
+const char* resmanLoadOrder[] = {
+"Character",
+"Mob",
+"Skill",
+"Reactor",
+"Npc",
+"UI",
+"Quest",
+"Item",
+"Effect",
+"String",
+"Etc",
+"Morph",
+"TamingMob",
+"Sound",
+"Map",
+"EzorsiaV2_UI"
+};
+unsigned char resmanLoadAMNT = sizeof(resmanLoadOrder) / sizeof(resmanLoadOrder[0]) - 1;
+__declspec(naked) void LoadUItwice() {
+	__asm {
+		mov     ebx, [eax * 4 + resmanLoadOrder]
+		jmp dword ptr[dwLoadUItwiceRetn]
+	}
+}
 int nStatusBarY = 0;
 __declspec(naked) void AdjustStatusBar() {
 	__asm {

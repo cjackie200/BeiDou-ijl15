@@ -36,9 +36,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="dllmain.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="AddyLocations.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -66,9 +63,6 @@
     <ClInclude Include="AutoTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="resource.h">
-      <Filter>Header Files\innerH</Filter>
-    </ClInclude>
     <ClInclude Include="targetver.h">
       <Filter>Header Files\innerH</Filter>
     </ClInclude>
@@ -88,9 +82,6 @@
       <Filter>Header Files\MapleTypes\ZAllocEx</Filter>
     </ClInclude>
     <ClInclude Include="stdafx.h">
-      <Filter>Header Files\innerH</Filter>
-    </ClInclude>
-    <ClInclude Include="NMCO.h">
       <Filter>Header Files\innerH</Filter>
     </ClInclude>
     <ClInclude Include="MapleClientCollectionTypes\ZRecyclable.h">
@@ -135,26 +126,17 @@
     <ClInclude Include="MapleClientCollectionTypes\ZXString.h">
       <Filter>Header Files\MapleTypes</Filter>
     </ClInclude>
-    <ClInclude Include="ijl15.h">
+    <ClInclude Include="MapleClientCollectionTypes\winhook_types.h">
+      <Filter>Header Files\MapleTypes</Filter>
+    </ClInclude>
+    <ClInclude Include="MainMain.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="dinput8.h">
       <Filter>Header Files\innerH</Filter>
     </ClInclude>
-    <ClInclude Include="BossHP.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="HpMpAlert.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="QuestHook.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FixIme.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FixBuddy.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SelectCharMacFix.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="resource.h">
+      <Filter>Header Files\innerH</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -170,34 +152,24 @@
     <ClCompile Include="ZAllocEx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="NMCO.cpp">
-      <Filter>Source Files\innerH</Filter>
-    </ClCompile>
     <ClCompile Include="stdafx.cpp">
       <Filter>Source Files\innerH</Filter>
     </ClCompile>
-    <ClCompile Include="ijl15.cpp">
+    <ClCompile Include="MainMain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="dinput8.cpp">
       <Filter>Source Files\innerH</Filter>
-    </ClCompile>
-    <ClCompile Include="BossHP.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="HpMpAlert.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="QuestHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SelectCharMacFix.cpp">
-      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="ezorsia.rc">
+    <ResourceCompile Include="Resource.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="config.ini" />
+    <CopyFileToFolders Include="EzorsiaV2_UI.wz" />
+    <CopyFileToFolders Include="MapleEzorsiaV2wzfiles.img" />
   </ItemGroup>
 </Project>

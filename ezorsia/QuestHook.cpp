@@ -1554,7 +1554,20 @@ static bool ShouldSkipOutgoingQuestHookForDialog(int questId, int npcId, int raw
         ClearDialogStateLocked();
         return false;
     }
-    Trace("Outgoing QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // 只有交互 Hook 管理的对话框才阻止任务操作，
+    // 原生 NPC 对话框（kDialogContextNpc）不阻止，
+    // 避免玩家在原生 NPC 对话框打开时点击任务入口后毫无反应。
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Outgoing QUEST_ACTION allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return false;
+    }
+    Trace("Outgoing QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
@@ -1591,7 +1604,19 @@ static bool ShouldSkipLocalQuestHookForDialog(int questId, int npcId, int rawAct
         ClearDialogStateLocked();
         return false;
     }
-    Trace("Local QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // 只有交互 Hook 管理的对话框才阻止任务操作，
+    // 原生 NPC 对话框不阻止，避免玩家点击任务入口后毫无反应。
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Local QUEST_ACTION allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return false;
+    }
+    Trace("Local QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
@@ -1627,7 +1652,18 @@ static bool PrepareLocalQuestHookInterceptLocked(int questId, int npcId, int raw
         ClearDialogStateLocked();
         return true;
     }
-    Trace("Local QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // 只有交互 Hook 管理的对话框才阻止拦截，原生 NPC 对话框不阻止。
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Local QUEST_ACTION intercept allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return true;
+    }
+    Trace("Local QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
