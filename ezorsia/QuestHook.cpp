@@ -1554,7 +1554,18 @@ static bool ShouldSkipOutgoingQuestHookForDialog(int questId, int npcId, int raw
         ClearDialogStateLocked();
         return false;
     }
-    Trace("Outgoing QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // v1.2.3 fix: only block when hook dialog is open
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Outgoing QUEST_ACTION allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return false;
+    }
+    Trace("Outgoing QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
@@ -1591,7 +1602,18 @@ static bool ShouldSkipLocalQuestHookForDialog(int questId, int npcId, int rawAct
         ClearDialogStateLocked();
         return false;
     }
-    Trace("Local QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // v1.2.3 fix: only block when hook dialog is open
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Local QUEST_ACTION allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return false;
+    }
+    Trace("Local QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
@@ -1627,7 +1649,18 @@ static bool PrepareLocalQuestHookInterceptLocked(int questId, int npcId, int raw
         ClearDialogStateLocked();
         return true;
     }
-    Trace("Local QUEST_ACTION ignored reason=dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+    // v1.2.3 fix: only block when hook dialog is open
+    if (g_currentDialogContext != kDialogContextInteractionHook) {
+        Trace("Local QUEST_ACTION intercept allowed reason=native-npc-dialog questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
+            questId,
+            npcId,
+            rawAction,
+            g_currentDialogContext,
+            g_currentDialogState,
+            g_currentDialogNpcId);
+        return true;
+    }
+    Trace("Local QUEST_ACTION ignored reason=hook-dialog-open questId=%d npcId=%d rawAction=%d context=%d state=%d currentNpcId=%d",
         questId,
         npcId,
         rawAction,
