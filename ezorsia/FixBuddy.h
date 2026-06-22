@@ -1,8 +1,8 @@
 #pragma once
 
-DWORD fixBuddyAcceptFunc = 0x00A3FA51;
-DWORD fixBuddyAcceptJmp = 0x005312D5;
-DWORD fixBuddyAcceptRtn = 0x005312A3;
+static DWORD fixBuddyAcceptFunc = 0x00A3FA51;
+static DWORD fixBuddyAcceptJmp = 0x005312D5;
+static DWORD fixBuddyAcceptRtn = 0x005312A3;
 __declspec(naked) void fixBuddyAccept() {
 	__asm {
 		call fixBuddyAcceptFunc

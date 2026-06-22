@@ -30,10 +30,10 @@ void DisableIme() {
 
 BYTE enabled = 1;
 
-DWORD funcEnableImeAddr = 0x009E85F3;
+static DWORD funcEnableImeAddr = 0x009E85F3;
 
-DWORD setOnFocusFirstJudgementRtnAddr = 0x004CA061;
-DWORD switchImeAddr = 0x004CA078;
+static DWORD setOnFocusFirstJudgementRtnAddr = 0x004CA061;
+static DWORD switchImeAddr = 0x004CA078;
 __declspec(naked) void setOnFocusFirstJudgement() {
 	// 这里原函数会直接跳过切换IME的地方，我们要让他跳到切换IME的地方
 	__asm {
@@ -46,8 +46,8 @@ __declspec(naked) void setOnFocusFirstJudgement() {
 	}
 }
 
-DWORD enableRtnAddr = 0x004CA08F;
-DWORD disableRtnAddr = 0x004CA091;
+static DWORD enableRtnAddr = 0x004CA08F;
+static DWORD disableRtnAddr = 0x004CA091;
 __declspec(naked) void switchIme() {
 	__asm {
 		cmp [esp + 0Ch], edi
@@ -67,8 +67,8 @@ __declspec(naked) void switchIme() {
 	}
 }
 
-DWORD enableMLRtnAddr = 0x004D32E0;
-DWORD disableMLRtnAddr = 0x004D32E2;
+static DWORD enableMLRtnAddr = 0x004D32E0;
+static DWORD disableMLRtnAddr = 0x004D32E2;
 __declspec(naked) void switchMLIme() {
 	__asm {
 		cmp  dword ptr[esp + 8], 0

@@ -1,3 +1,4 @@
+#include "QuestHook.h"
 #pragma once
 #include "MapleClientCollectionTypes/ZXString.h"	//also using AutoTypes.h to store unused portions of code since it's a smol file
 #include "MapleClientCollectionTypes/ZRef.h"

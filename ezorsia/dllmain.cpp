@@ -50,14 +50,15 @@ void MainFunc() {
 //	//!!fixes todo: 005F40A4 006395D3 00A03350 maybe:_sub_9F5239 _sub_9F84D0
 //	//! _sub_9F5C50 _sub_9F84D0
 //
-//	//HookPcCreateObject_IWzResMan(true);//not rewritten //sub_9FAF55    end 009FAFB9
-//	//HookPcCreateObject_IWzNameSpace(true);//not rewritten	//sub_9FAFBA    end 009FB01E
-//	//HookPcCreateObject_IWzFileSystem(true);//not rewritten //sub_9FB01F    end 009FB083
+	HookPcCreateObject_IWzResMan(true);//not rewritten //sub_9FAF55    end 009FAFB9
+	HookPcCreateObject_IWzNameSpace(true);//not rewritten	//sub_9FAFBA    end 009FB01E
+	HookPcCreateObject_IWzFileSystem(true);//not rewritten //sub_9FB01F    end 009FB083
 	HookCWvsApp__Dir_BackSlashToSlash(true);//rewritten but minor utility //sub_9F95FE	end 009F9620
-//	//HookCWvsApp__Dir_upDir(true);//not rewritten //sub_9F9644	end 009F9679
-//	//Hookbstr_ctor(true);//not rewritten //sub_406301	end	00406356
+	HookCWvsApp__Dir_upDir(true);//not rewritten //sub_9F9644	end 009F9679
+	Hookbstr_ctor(true);//not rewritten //sub_406301	end	00406356
 	Hook_sub_9F7964(true);//re-written for testing//HRESULT __thiscall IWzFileSystem::Init(IWzFileSystem *this, Ztl_bstr_t sPath)
-//	//HookIWzNameSpace__Mount(true);//not rewritten
+	HookIWzNameSpace__Mount(true);//not rewritten
+	HookSaveGlobal(true);
 //	Hook_sub_9F7159(true);//added on some stuff//void __thiscall CWvsApp::InitializeResMan(CWvsApp *this)//sub_9F7159 end 009F7909 //experimental //ty to all the contributors of the ragezone release: Client load .img instead of .wz v62~v92
 	Hook_StringPool__GetString(true);//no conflicts, only modifies return //hook stringpool modification //ty !! popcorn //ty darter
 	Hook_sub_78C8A6(true);//potential conflicts //sub_78C8A6	end 0078D165 //custom exp table client side
@@ -85,7 +86,7 @@ void MainFunc() {
 	InstallQuestDiagnostics();
 	HookQuestActionClick(true);
 	BossHP::Hook();
-	Client::FixMouseWheel();
+	//Client::FixMouseWheel();
 	Client::Chinese();
 	Client::LongQuickSlot();
 	Client::FixDateFormat();

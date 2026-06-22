@@ -3,8 +3,6 @@
 #include "codecaves.h"
 #include "MapleClientCollectionTypes/ZXString.h"
 #include "detours.h"
-#include "FixIme.h"
-#include "FixBuddy.h"
 #include "stdafx.h"
 #include "AddyLocations.h"
 #include "codecaves.h"
@@ -651,13 +649,13 @@ void Client::UpdateLogin() {	//un-used //may still contain some useful addresses
 void Client::Chinese() {
 	if (Client::imeType == 0)
 	{
-		FixIme::HookOld();
+		/*FixIme::HookOld()*/;
 	}
 	else {
-		FixIme::HookNew();
+		/*FixIme::HookNew()*/;
 	}
 
-	FixBuddy::Hook();
+	/*FixBuddy::Hook()*/;
 	if(SwitchChinese) {
 		//创建角色界面女
 		Memory::WriteString(0x00AF6D1C, "  女  ");
@@ -990,7 +988,7 @@ int Client::setAccCap = 999;
 int Client::setAvdCap = 999;
 double Client::setAtkOutCap = 199999;
 bool Client::bigLoginFrame = false;
-bool Client::SwitchChinese = false;
+bool Client::SwitchChinese = true;
 bool Client::debug = false;
 bool Client::noPassword = false;
 bool Client::climbSpeedAuto = false;
