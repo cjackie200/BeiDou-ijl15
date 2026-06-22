@@ -1,5 +1,3 @@
-#include <WS2tcpip.h>
-#include <WinSock2.h>
 #pragma once
 
 #include "targetver.h"

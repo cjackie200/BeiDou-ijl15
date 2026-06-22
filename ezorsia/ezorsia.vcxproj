@@ -73,7 +73,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <TargetName>ijl15</TargetName>
+    <TargetName>dinput8</TargetName>
     <ExecutablePath>$(ExecutablePath)</ExecutablePath>
     <IncludePath>$(IncludePath)</IncludePath>
     <ReferencePath>$(ReferencePath)</ReferencePath>
@@ -88,7 +88,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>ijl15</TargetName>
+    <TargetName>dinput8</TargetName>
     <OutDir>$(SolutionDir)\out\$(Configuration)\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -218,11 +218,9 @@
     <ClCompile Include="MainMain.cpp" />
     <ClCompile Include="ZAllocEx.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="Memory.cpp" />
     <ClCompile Include="BossHP.cpp" />
     <ClCompile Include="HpMpAlert.cpp" />
-    <ClCompile Include="ijl15.cpp" />
-    <ClCompile Include="Memory.cpp" />
-    <ClCompile Include="NMCO.cpp" />
     <ClCompile Include="QuestHook.cpp" />
     <ClCompile Include="SelectCharMacFix.cpp" />
     <ClCompile Include="stdafx.cpp">
