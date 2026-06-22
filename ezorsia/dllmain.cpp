@@ -27,7 +27,7 @@ void MainFunc() {
 //	//Hook_sub_494ED1(false);//not rewritten//unlikely conflict, section virtualized by default //sub_494ED1  end 004954C4 //CClientSocket::OnConnect(CClientSocket * this, int bSuccess)
 	Hook_sub_9F4E54(true);//rewritten friendly CrC non-checker//unlikely conflict, section virtualized by default //sub_9F4E54  end 009F4F08	//likely: unsigned int __cdecl Crc32_GetCrc32_VMTable(unsigned int* pmem, unsigned int size, unsigned int* pcheck, unsigned int *pCrc32) 
 //	//Hook_sub_9F4F09(false);//not rewritten//unlikely conflict, section virtualized by default //sub_9F4F09  end 009F4FD9 //unknown func, built into cwvsapp::run in v95 //not called by anything
-//	Hook_sub_9F4FDA(true);//seems to work//unlikely conflict, section virtualized by default //sub_9F4FDA end 009F51D3 //void __thiscall CWvsApp::CWvsApp(CWvsApp *this, const char *sCmdLine)
+	//Hook_sub_9F4FDA(true);//seems to work//unlikely conflict, section virtualized by default //sub_9F4FDA end 009F51D3 //void __thiscall CWvsApp::CWvsApp(CWvsApp *this, const char *sCmdLine)
 //	Hook_sub_9F5239(true);//seems to work//unlikely conflict, section virtualized by default //sub_9F5239 end 009F5C4F //void __thiscall CWvsApp::SetUp(CWvsApp *this)
 //	Hook_sub_9F5C50(true);//seems to work//unlikely conflict, section virtualized by default //sub_9F5C50  end 009F698D //void __thiscall CWvsApp::Run(CWvsApp *this, int *pbTerminate)
 //	//defined//sub_9F6F27 end 009F7033 //void __thiscall CWvsApp::ConnectLogin(CWvsApp *this)
