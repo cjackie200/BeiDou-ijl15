@@ -15,6 +15,9 @@ namespace {
 constexpr WORD kRecvNpcTalk = 0x003A;
 constexpr WORD kRecvNpcTalkMore = 0x003C;
 constexpr WORD kRecvQuestAction = 0x006B;
+constexpr WORD kRecvCloseRangeAttack = 0x002C;
+constexpr WORD kRecvRangedAttack = 0x002D;
+constexpr WORD kRecvMagicAttack = 0x002E;
 constexpr WORD kRecvCustomPacket = 0x3713;
 constexpr WORD kCustomInteractionHookEvent = 0x1003;
 
@@ -27,8 +30,13 @@ constexpr WORD kSendStatChanged = 0x001F;
 constexpr WORD kS2CInteractionHookRules = 0x1001;
 constexpr WORD kS2CInteractionHookResult = 0x1002;
 constexpr WORD kS2CInteractionHookProgress = 0x1004;
+constexpr WORD kS2CClientRuntimeConfig = 0x1005;
 constexpr DWORD kClientSocketPtr = 0x00BE7914;
 constexpr DWORD kQuestActionClickAddr = 0x00716FE1;
+constexpr DWORD kGenerateAutoKeyDownAddr = 0x0059B2D2;
+constexpr unsigned int kKeyRepeatCountMask = 0x0000FFFF;
+constexpr unsigned int kPreviousKeyStateMask = 0x40000000;
+constexpr unsigned int kTransitionStateMask = 0x80000000;
 
 constexpr int kLegacyRulesVersion = 3;
 constexpr int kVersion = 5; // multi-condition progress (conditionCount per entry)
@@ -110,6 +118,12 @@ struct CInPacket {
     unsigned short Unknown;
     unsigned int Offset;
     void* Unk;
+};
+
+struct ISMSG {
+    unsigned int message;
+    unsigned int wParam;
+    int lParam;
 };
 
 struct InteractionHookRule {
@@ -195,6 +209,9 @@ static SendPacket_t g_SendPacket = reinterpret_cast<SendPacket_t>(0x0049637B);
 using QuestActionClick_t = void(__fastcall*)(void* pThis, void* edx, int arg);
 static QuestActionClick_t g_QuestActionClick = reinterpret_cast<QuestActionClick_t>(kQuestActionClickAddr);
 
+using GenerateAutoKeyDown_t = int(__fastcall*)(void* pThis, void* edx, ISMSG* message);
+static GenerateAutoKeyDown_t g_GenerateAutoKeyDown = reinterpret_cast<GenerateAutoKeyDown_t>(kGenerateAutoKeyDownAddr);
+
 static std::mutex g_stateMutex;
 static std::vector<InteractionHookRule> g_characterQuestRules;
 static std::vector<InteractionHookRule> g_mapNpcRules;
@@ -217,6 +234,9 @@ static std::mutex g_traceMutex;
 static PVOID g_exceptionHandler = nullptr;
 static HANDLE g_keyTraceThread = nullptr;
 static std::atomic<bool> g_keyTraceRunning{ false };
+static std::atomic<bool> g_autoKeyDownFixEnabled{ true };
+
+static void Trace(const char* format, ...);
 
 enum class IncomingResult {
     None,
@@ -244,6 +264,154 @@ static void WriteI32(std::vector<unsigned char>& out, int value) {
     out.push_back(static_cast<unsigned char>((value >> 8) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 16) & 0xFF));
     out.push_back(static_cast<unsigned char>((value >> 24) & 0xFF));
+}
+
+static const char* AttackOpcodeName(unsigned short opcode) {
+    switch (opcode) {
+    case kRecvCloseRangeAttack:
+        return "close";
+    case kRecvRangedAttack:
+        return "ranged";
+    case kRecvMagicAttack:
+        return "magic";
+    default:
+        return "unknown";
+    }
+}
+
+static bool IsAttackOpcode(unsigned short opcode) {
+    return opcode == kRecvCloseRangeAttack
+        || opcode == kRecvRangedAttack
+        || opcode == kRecvMagicAttack;
+}
+
+static int IsKeyDown(int virtualKey) {
+    return (GetAsyncKeyState(virtualKey) & 0x8000) != 0 ? 1 : 0;
+}
+
+static void AppendHeldKey(std::string& out, int virtualKey, const char* name) {
+    if (!IsKeyDown(virtualKey)) {
+        return;
+    }
+
+    if (!out.empty()) {
+        out += '+';
+    }
+    out += name;
+}
+
+static std::string GetHeldKeys() {
+    std::string held;
+    char keyName[] = { '\0', '\0' };
+    for (int key = 'A'; key <= 'Z'; key++) {
+        keyName[0] = static_cast<char>(key);
+        AppendHeldKey(held, key, keyName);
+    }
+    for (int key = '0'; key <= '9'; key++) {
+        keyName[0] = static_cast<char>(key);
+        AppendHeldKey(held, key, keyName);
+    }
+
+    char functionName[4] = {};
+    for (int key = VK_F1; key <= VK_F12; key++) {
+        std::snprintf(functionName, sizeof(functionName), "F%d", key - VK_F1 + 1);
+        AppendHeldKey(held, key, functionName);
+    }
+
+    AppendHeldKey(held, VK_INSERT, "Insert");
+    AppendHeldKey(held, VK_HOME, "Home");
+    AppendHeldKey(held, VK_PRIOR, "PageUp");
+    AppendHeldKey(held, VK_DELETE, "Delete");
+    AppendHeldKey(held, VK_END, "End");
+    AppendHeldKey(held, VK_NEXT, "PageDown");
+    AppendHeldKey(held, VK_CONTROL, "Ctrl");
+    AppendHeldKey(held, VK_SHIFT, "Shift");
+    AppendHeldKey(held, VK_MENU, "Alt");
+    AppendHeldKey(held, VK_SPACE, "Space");
+    if (held.empty()) {
+        return "none";
+    }
+    return held;
+}
+
+static std::string VirtualKeyName(unsigned int virtualKey) {
+    if ((virtualKey >= 'A' && virtualKey <= 'Z') || (virtualKey >= '0' && virtualKey <= '9')) {
+        char keyName[] = { static_cast<char>(virtualKey), '\0' };
+        return keyName;
+    }
+    if (virtualKey >= VK_F1 && virtualKey <= VK_F12) {
+        char keyName[4] = {};
+        std::snprintf(keyName, sizeof(keyName), "F%u", virtualKey - VK_F1 + 1);
+        return keyName;
+    }
+
+    switch (virtualKey) {
+    case VK_INSERT:
+        return "Insert";
+    case VK_HOME:
+        return "Home";
+    case VK_PRIOR:
+        return "PageUp";
+    case VK_DELETE:
+        return "Delete";
+    case VK_END:
+        return "End";
+    case VK_NEXT:
+        return "PageDown";
+    case VK_CONTROL:
+        return "Ctrl";
+    case VK_SHIFT:
+        return "Shift";
+    case VK_MENU:
+        return "Alt";
+    case VK_SPACE:
+        return "Space";
+    default:
+        char keyName[12] = {};
+        std::snprintf(keyName, sizeof(keyName), "VK_%02X", virtualKey & 0xFF);
+        return keyName;
+    }
+}
+
+static bool NormalizeAutoKeyDownMessage(ISMSG* message, unsigned int& before, unsigned int& after) {
+    if (message == nullptr || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) {
+        before = 0;
+        after = 0;
+        return false;
+    }
+
+    before = static_cast<unsigned int>(message->lParam);
+    after = (before & ~(kKeyRepeatCountMask | kPreviousKeyStateMask | kTransitionStateMask)) | 1;
+    message->lParam = static_cast<int>(after);
+    return before != after;
+}
+
+static void TraceOutgoingAttackPacket(COutPacket* packet) {
+    if (!Client::debug || packet == nullptr || packet->Data == nullptr || packet->Size < 8) {
+        return;
+    }
+
+    const unsigned char* data = packet->Data;
+    const unsigned short opcode = ReadU16(data);
+    if (!IsAttackOpcode(opcode)) {
+        return;
+    }
+
+    const unsigned char attackedAndDamage = data[3];
+    const int numAttacked = (attackedAndDamage >> 4) & 0x0F;
+    const int numDamage = attackedAndDamage & 0x0F;
+    const int skillId = ReadI32(data + 4);
+    const std::string heldKeys = GetHeldKeys();
+
+    Trace("Outgoing ATTACK type=%s opcode=0x%04X size=%lu skillId=%d numAttacked=%d numDamage=%d tick=%lu heldKeys=%s",
+        AttackOpcodeName(opcode),
+        opcode,
+        packet->Size,
+        skillId,
+        numAttacked,
+        numDamage,
+        GetTickCount(),
+        heldKeys.c_str());
 }
 
 static bool ReadPacketString(const unsigned char*& cursor, const unsigned char* end, std::string& out) {
@@ -1963,6 +2131,26 @@ static bool HandleResult(const unsigned char* payload, unsigned long payloadSize
     return true;
 }
 
+static bool ApplyClientRuntimeConfig(const unsigned char* payload, unsigned long payloadSize) {
+    if (payload == nullptr || payloadSize < 8) {
+        Trace("ApplyClientRuntimeConfig reject payloadSize=%lu reason=short", payloadSize);
+        return false;
+    }
+
+    const int version = ReadI32(payload);
+    const int enableAutoKeyDownFix = ReadI32(payload + 4);
+    if (version != kVersion || (enableAutoKeyDownFix != 0 && enableAutoKeyDownFix != 1)) {
+        Trace("ApplyClientRuntimeConfig reject version=%d enableAutoKeyDownFix=%d",
+            version,
+            enableAutoKeyDownFix);
+        return false;
+    }
+
+    g_autoKeyDownFixEnabled.store(enableAutoKeyDownFix != 0);
+    Trace("ApplyClientRuntimeConfig ok enableAutoKeyDownFix=%d", enableAutoKeyDownFix);
+    return true;
+}
+
 static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSize) {
     constexpr int kMaxProgressEntries = 1000;
     if (payload == nullptr || payloadSize < 8) {
@@ -2062,6 +2250,10 @@ static IncomingResult HandleIncomingAtOffset(CInPacket* packet, unsigned long he
         Trace("Incoming hook progress opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         return ApplyProgress(payload, payloadSize) ? IncomingResult::Consumed : IncomingResult::None;
     }
+    if (opcode == kS2CClientRuntimeConfig) {
+        Trace("Incoming client runtime config opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
+        return ApplyClientRuntimeConfig(payload, payloadSize) ? IncomingResult::Consumed : IncomingResult::None;
+    }
 
     TrackIncomingPacket(opcode, payload, payloadSize);
     return IncomingResult::None;
@@ -2077,6 +2269,8 @@ static bool HandleIncoming(CInPacket* packet) {
 }
 
 static bool TryInterceptOutgoing(void* socket, void* edx, COutPacket* packet) {
+    TraceOutgoingAttackPacket(packet);
+
     if (TryInterceptNpcTalk(socket, edx, packet)) {
         return true;
     }
@@ -2134,9 +2328,51 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
     g_QuestActionClick(pThis, edx, arg);
 }
 
+static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
+    const int result = g_GenerateAutoKeyDown(pThis, edx, message);
+    if (result == 0 || message == nullptr) {
+        return result;
+    }
+
+    unsigned int lParamBefore = static_cast<unsigned int>(message->lParam);
+    unsigned int lParamAfter = lParamBefore;
+    const bool enabled = g_autoKeyDownFixEnabled.load();
+    const bool normalized = enabled
+        ? NormalizeAutoKeyDownMessage(message, lParamBefore, lParamAfter)
+        : false;
+    if (!Client::debug) {
+        return result;
+    }
+
+    const std::string keyName = VirtualKeyName(message->wParam);
+    const std::string heldKeys = GetHeldKeys();
+    Trace("AutoKeyDown result=%d enabled=%d normalized=%d this=%p message=0x%04X wParam=%u key=%s lParamBefore=0x%08X lParamAfter=0x%08X tick=%lu heldKeys=%s",
+        result,
+        enabled ? 1 : 0,
+        normalized ? 1 : 0,
+        pThis,
+        message->message,
+        message->wParam,
+        keyName.c_str(),
+        lParamBefore,
+        lParamAfter,
+        GetTickCount(),
+        heldKeys.c_str());
+    return result;
+}
+
 void HookQuestActionClick(bool enable) {
     const bool ok = Memory::SetHook(enable, reinterpret_cast<void**>(&g_QuestActionClick), QuestActionClick_Hook);
     Trace("QuestActionClick hook enable=%d ok=%d addr=0x%08X", enable ? 1 : 0, ok ? 1 : 0, kQuestActionClickAddr);
+}
+
+void HookInputAutoKeyDownFix(bool enable) {
+    const bool ok = Memory::SetHook(enable, reinterpret_cast<void**>(&g_GenerateAutoKeyDown), GenerateAutoKeyDown_Hook);
+    Trace("InputAutoKeyDown fix hook enable=%d ok=%d runtimeEnabled=%d addr=0x%08X",
+        enable ? 1 : 0,
+        ok ? 1 : 0,
+        g_autoKeyDownFixEnabled.load() ? 1 : 0,
+        kGenerateAutoKeyDownAddr);
 }
 
 void InstallQuestDiagnostics() {

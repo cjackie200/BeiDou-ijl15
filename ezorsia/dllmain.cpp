@@ -130,6 +130,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		HookHpMpAlertRecv(true);
 		HookSelectCharMacFix(true);
 		HookQuestActionClick(true);
+		HookInputAutoKeyDownFix(true);
 		QuestHookTrace("Packet hooks installed recv=1 send=1 localQuest=1");
 		//Hook_get_unknown(true);
 		//Hook_get_resource_object(true); //helper function hooks  //ty teto for helping me get started
