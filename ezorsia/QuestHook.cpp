@@ -451,6 +451,7 @@ static unsigned long IncomingPacketSize(CInPacket* packet) {
 }
 
 static void TraceV(const char* format, va_list args) {
+    if (!Client::debug) return;
     std::lock_guard<std::mutex> lock(g_traceMutex);
     FILE* file = nullptr;
     if (fopen_s(&file, "interaction-hook.log", "ab") != 0 || file == nullptr) {
