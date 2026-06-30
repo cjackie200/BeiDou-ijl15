@@ -2433,52 +2433,46 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
     g_QuestActionClick(pThis, edx, arg);
 }
 
+static ULONGLONG g_lastAutoKeyAction = 0;
+static constexpr ULONGLONG kMinAutoKeyIntervalMs = 80;
+
 static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
-    unsigned int lParamBefore = 0;
-    unsigned int lParamAfter = 0;
-    bool normalized = false;
     if (message != nullptr
-            && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)) {
+            && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)
+            && g_autoKeyDownFixEnabled.load()) {
         const unsigned int before = static_cast<unsigned int>(message->lParam);
-        lParamBefore = before;
-        const unsigned int repeatCount = before & kKeyRepeatCountMask;
-        // 只在长按重复（repeatCount>0）时归一化，首次按键不动
-        if (repeatCount > 0 && g_autoKeyDownFixEnabled.load()) {
-            // 保留 scan code(16-23)、extended(24)、context(29)、prev state(30)
-            // 清零 repeat count(0-15) 和 transition(31)，设 repeat=1
-            constexpr unsigned int kKeepMask = ~(kKeyRepeatCountMask | kTransitionStateMask);
-            lParamAfter = (before & kKeepMask) | 1;
-            message->lParam = static_cast<int>(lParamAfter);
-            normalized = true;
-        } else {
-            lParamAfter = before;
+        // Bit 30 = previous key state: 1 = key already down (auto-repeat), 0 = fresh press
+        const bool isHeld = (before & kPreviousKeyStateMask) != 0;
+        if (isHeld) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - g_lastAutoKeyAction < kMinAutoKeyIntervalMs) {
+                return 0; // throttle: too soon since last action
+            }
         }
     }
 
     const int result = g_GenerateAutoKeyDown(pThis, edx, message);
 
-    if (result == 0 || message == nullptr) {
-        return result;
+    if (result != 0) {
+        g_lastAutoKeyAction = GetTickCount64();
     }
 
-    if (!Client::debug) {
+    if (result == 0 || message == nullptr || !Client::debug) {
         return result;
     }
 
     const std::string keyName = VirtualKeyName(message->wParam);
     const std::string heldKeys = GetHeldKeys();
-    Trace("AutoKeyDown result=%d enabled=%d normalized=%d this=%p message=0x%04X wParam=%u key=%s lParamBefore=0x%08X lParamAfter=0x%08X tick=%lu heldKeys=%s",
+    Trace("AutoKeyDown result=%d enabled=%d this=%p message=0x%04X wParam=%u key=%s tick=%lu heldKeys=%s interval=%llu",
         result,
         g_autoKeyDownFixEnabled.load() ? 1 : 0,
-        normalized ? 1 : 0,
         pThis,
         message->message,
         message->wParam,
         keyName.c_str(),
-        lParamBefore,
-        lParamAfter,
         GetTickCount(),
-        heldKeys.c_str());
+        heldKeys.c_str(),
+        GetTickCount64() - g_lastAutoKeyAction);
     return result;
 }
 
