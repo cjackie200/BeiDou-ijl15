@@ -19,6 +19,9 @@ const int KILL_PROGRESS_Y = 72;
 
 char KillProgressBar::aKillProgressToolTip[1304];
 bool KillProgressBar::bKillProgressVisible = false;
+static std::string g_lastProgressText;
+static int g_cachedViewPortWidth = 0;
+static int g_cachedToolTipX = 0;
 
 // --- ReadInt helper (same pattern as BossHP) ---
 
@@ -60,25 +63,36 @@ void KillProgressBar::CreateToolTip(int instance) {
     _UIToolTip__CreateToolTip(instance, 0);
 }
 
-// --- Viewport accessor ---
+// --- Viewport accessor (cached — only reads game memory once) ---
 
 int KillProgressBar::GetViewPortWidth() {
-    return ReadInt(dwViewPortWidth_KP);
+    if (g_cachedViewPortWidth == 0) {
+        g_cachedViewPortWidth = ReadInt(dwViewPortWidth_KP);
+        g_cachedToolTipX = g_cachedViewPortWidth / 2 - 100;
+    }
+    return g_cachedViewPortWidth;
 }
 
-// --- Main rendering ---
+// --- Main rendering (only updates tooltip when text changes) ---
 
 void KillProgressBar::DrawKillProgressIfNeeded() {
     std::string progressText;
     if (GetKillProgressTooltipText(progressText)) {
-        SetToolTip_String(
-            reinterpret_cast<int>(&aKillProgressToolTip),
-            GetViewPortWidth() / 2 - 100,
-            KILL_PROGRESS_Y,
-            progressText.c_str());
-        bKillProgressVisible = true;
+        if (progressText != g_lastProgressText) {
+            if (g_cachedViewPortWidth == 0) {
+                GetViewPortWidth(); // ensure cache is initialized
+            }
+            SetToolTip_String(
+                reinterpret_cast<int>(&aKillProgressToolTip),
+                g_cachedToolTipX,
+                KILL_PROGRESS_Y,
+                progressText.c_str());
+            g_lastProgressText = progressText;
+            bKillProgressVisible = true;
+        }
     } else if (bKillProgressVisible) {
         ClearToolTip(reinterpret_cast<int>(&aKillProgressToolTip));
+        g_lastProgressText.clear();
         bKillProgressVisible = false;
     }
 }
@@ -106,6 +120,7 @@ void KillProgressBar::HookInitField() {
         DisposeToolTip(reinterpret_cast<int>(&aKillProgressToolTip));
         CreateToolTip(reinterpret_cast<int>(&aKillProgressToolTip));
         bKillProgressVisible = false;
+        g_lastProgressText.clear();
         _Field__Init(pThis, edx);
     };
 
