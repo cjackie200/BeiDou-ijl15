@@ -2373,9 +2373,24 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
 static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
     unsigned int lParamBefore = 0;
     unsigned int lParamAfter = 0;
-    const bool enabled = g_autoKeyDownFixEnabled.load();
-    const bool normalized = enabled
-        && NormalizeAutoKeyDownMessage(message, lParamBefore, lParamAfter);
+    bool normalized = false;
+    if (message != nullptr
+            && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)) {
+        const unsigned int before = static_cast<unsigned int>(message->lParam);
+        lParamBefore = before;
+        const unsigned int repeatCount = before & kKeyRepeatCountMask;
+        // 只在长按重复（repeatCount>0）时归一化，首次按键不动
+        if (repeatCount > 0 && g_autoKeyDownFixEnabled.load()) {
+            // 保留 scan code(16-23)、extended(24)、context(29)、prev state(30)
+            // 清零 repeat count(0-15) 和 transition(31)，设 repeat=1
+            constexpr unsigned int kKeepMask = ~(kKeyRepeatCountMask | kTransitionStateMask);
+            lParamAfter = (before & kKeepMask) | 1;
+            message->lParam = static_cast<int>(lParamAfter);
+            normalized = true;
+        } else {
+            lParamAfter = before;
+        }
+    }
 
     const int result = g_GenerateAutoKeyDown(pThis, edx, message);
 
@@ -2391,7 +2406,7 @@ static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* me
     const std::string heldKeys = GetHeldKeys();
     Trace("AutoKeyDown result=%d enabled=%d normalized=%d this=%p message=0x%04X wParam=%u key=%s lParamBefore=0x%08X lParamAfter=0x%08X tick=%lu heldKeys=%s",
         result,
-        enabled ? 1 : 0,
+        g_autoKeyDownFixEnabled.load() ? 1 : 0,
         normalized ? 1 : 0,
         pThis,
         message->message,
