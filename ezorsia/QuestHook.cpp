@@ -2433,46 +2433,19 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
     g_QuestActionClick(pThis, edx, arg);
 }
 
-static ULONGLONG g_lastAutoKeyAction = 0;
-static constexpr ULONGLONG kMinAutoKeyIntervalMs = 80;
-
 static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
-    if (message != nullptr
-            && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)
-            && g_autoKeyDownFixEnabled.load()) {
-        const unsigned int before = static_cast<unsigned int>(message->lParam);
-        // Bit 30 = previous key state: 1 = key already down (auto-repeat), 0 = fresh press
-        const bool isHeld = (before & kPreviousKeyStateMask) != 0;
-        if (isHeld) {
-            const ULONGLONG now = GetTickCount64();
-            if (now - g_lastAutoKeyAction < kMinAutoKeyIntervalMs) {
-                return 0; // throttle: too soon since last action
-            }
+    const int result = g_GenerateAutoKeyDown(pThis, edx, message);
+
+    // 客户端 GenerateAutoKeyDown 内部检测到长按自动重复后会返回 0 来阻止技能。
+    // 当 fix 启用时，强制将 0（阻止）覆写为非 0（放行），移除防长按限制。
+    if (result == 0 && g_autoKeyDownFixEnabled.load()) {
+        if (message != nullptr
+                && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)) {
+            // 返回值 1 让客户端继续正常处理该技能，不会进入无伤害分支
+            return 1;
         }
     }
 
-    const int result = g_GenerateAutoKeyDown(pThis, edx, message);
-
-    if (result != 0) {
-        g_lastAutoKeyAction = GetTickCount64();
-    }
-
-    if (result == 0 || message == nullptr || !Client::debug) {
-        return result;
-    }
-
-    const std::string keyName = VirtualKeyName(message->wParam);
-    const std::string heldKeys = GetHeldKeys();
-    Trace("AutoKeyDown result=%d enabled=%d this=%p message=0x%04X wParam=%u key=%s tick=%lu heldKeys=%s interval=%llu",
-        result,
-        g_autoKeyDownFixEnabled.load() ? 1 : 0,
-        pThis,
-        message->message,
-        message->wParam,
-        keyName.c_str(),
-        GetTickCount(),
-        heldKeys.c_str(),
-        GetTickCount64() - g_lastAutoKeyAction);
     return result;
 }
 
