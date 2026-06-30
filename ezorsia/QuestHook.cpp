@@ -2371,17 +2371,18 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
 }
 
 static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
+    unsigned int lParamBefore = 0;
+    unsigned int lParamAfter = 0;
+    const bool enabled = g_autoKeyDownFixEnabled.load();
+    const bool normalized = enabled
+        && NormalizeAutoKeyDownMessage(message, lParamBefore, lParamAfter);
+
     const int result = g_GenerateAutoKeyDown(pThis, edx, message);
+
     if (result == 0 || message == nullptr) {
         return result;
     }
 
-    unsigned int lParamBefore = static_cast<unsigned int>(message->lParam);
-    unsigned int lParamAfter = lParamBefore;
-    const bool enabled = g_autoKeyDownFixEnabled.load();
-    const bool normalized = enabled
-        ? NormalizeAutoKeyDownMessage(message, lParamBefore, lParamAfter)
-        : false;
     if (!Client::debug) {
         return result;
     }
