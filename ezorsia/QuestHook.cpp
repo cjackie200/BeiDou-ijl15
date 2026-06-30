@@ -218,6 +218,7 @@ static std::vector<InteractionHookRule> g_mapNpcRules;
 static std::vector<InteractionHookRule> g_dialogTempRules;
 static std::unordered_map<int, std::string> g_progressTextByQuestId;
 static std::unordered_map<int, std::vector<std::pair<int, int>>> g_progressConditionsByQuestId;
+static std::unordered_map<int, int> g_progressQuestState;
 static std::unordered_map<int, PendingRuleBatch> g_pendingRuleBatches;
 static ActivePending g_activePending{};
 static IgnoredQuestAction g_ignoreNextOutgoingQuestAction{};
@@ -2205,6 +2206,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
     const unsigned char* end = payload + payloadSize;
     std::unordered_map<int, std::string> nextText;
     std::unordered_map<int, std::vector<std::pair<int, int>>> nextConditions;
+    std::unordered_map<int, int> nextQuestState;
     for (int i = 0; i < count; ++i) {
         if (cursor + 12 > end) {
             Trace("ApplyProgress reject count=%d index=%d reason=entry-short", count, i);
@@ -2253,6 +2255,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
         }
         nextText[questId] = combinedText;
         nextConditions[questId] = conditionValues;
+        nextQuestState[questId] = state;
     }
     if (cursor != end) {
         Trace("ApplyProgress warning count=%d reason=trailing-bytes bytes=%lu",
@@ -2264,6 +2267,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_progressTextByQuestId.swap(nextText);
         g_progressConditionsByQuestId.swap(nextConditions);
+        g_progressQuestState.swap(nextQuestState);
     }
     Trace("ApplyProgress ok count=%d", count);
     return true;
@@ -2322,6 +2326,54 @@ static bool TryInterceptOutgoing(void* socket, void* edx, COutPacket* packet) {
     return TryInterceptQuestAction(socket, edx, packet);
 }
 
+static bool GetKillProgressTooltipTextImpl(std::string& outText) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+
+    for (const auto& entry : g_progressTextByQuestId) {
+        const int questId = entry.first;
+        const std::string& text = entry.second;
+
+        // Life proof quest block: 5100..5974
+        if (questId < 5100 || questId > 5974) continue;
+
+        // OPTION_SLOT fixed slots: offset 12/13/14 within 25-slot block
+        const int offset = (questId - 5100) % 25;
+        if (offset < 12 || offset > 14) continue;
+
+        // Must be in STARTED state
+        auto stateIt = g_progressQuestState.find(questId);
+        if (stateIt == g_progressQuestState.end() || stateIt->second != 1) continue;
+
+        // Must have non-zero current progress, not yet completed
+        auto condIt = g_progressConditionsByQuestId.find(questId);
+        if (condIt == g_progressConditionsByQuestId.end() || condIt->second.empty()) continue;
+        const int current = condIt->second[0].first;
+        const int required = condIt->second[0].second;
+        if (current <= 0 || current >= required) continue;
+
+        // Strip WZ macros: all patterns like #b, #k, #r, #e, #n, #i, #t, #o, #p, #c etc.
+        std::string displayText = text;
+        size_t pos = 0;
+        while (pos < displayText.size()) {
+            if (displayText[pos] == '#' && pos + 1 < displayText.size()
+                    && std::isalpha(static_cast<unsigned char>(displayText[pos + 1]))) {
+                size_t skip = 2;
+                if (pos + 2 < displayText.size()
+                        && std::isalpha(static_cast<unsigned char>(displayText[pos + 2]))) {
+                    skip = 3;
+                }
+                displayText.erase(pos, skip);
+            } else {
+                ++pos;
+            }
+        }
+
+        outText = displayText;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool HandleQuestHookIncoming(void* packet) {
@@ -2357,6 +2409,17 @@ bool ReplaceQuestHookProgressMarkers(const char* input, std::string& output) {
         replaced = false;
     }
     return replaced;
+}
+
+bool GetKillProgressTooltipText(std::string& outText) {
+    bool result = false;
+    __try {
+        result = GetKillProgressTooltipTextImpl(outText);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        outText.clear();
+        result = false;
+    }
+    return result;
 }
 
 static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {

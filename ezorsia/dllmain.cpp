@@ -6,6 +6,7 @@
 #include "ReplacementFuncs.h"
 #include <comutil.h>
 #include "BossHP.h"
+#include "KillProgressBar.h"
 #include "HpMpAlert.h"
 #include "QuestHook.h"
 #include "SelectCharMacFix.h"
@@ -151,6 +152,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		Client::NoPassword();
 		Client::MoreHook();
 		BossHP::Hook();
+		KillProgressBar::Hook();
 		Client::WorldMap();
 		Client::RefreshRate(); 
 		Client::DeleteChar();
