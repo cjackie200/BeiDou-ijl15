@@ -2417,16 +2417,21 @@ static void __fastcall QuestActionClick_Hook(void* pThis, void* edx, int arg) {
 }
 
 static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* message) {
+    if (message != nullptr
+            && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)
+            && g_autoKeyDownFixEnabled.load()) {
+        // 入口：清零 lParam 的 repeatCount（Bit 0..15）和 transition（Bit 31），
+        // 让原始函数内部的防长按计数器不会因重复消息而递增。
+        constexpr unsigned int kKeepMask = ~(0x0000FFFFu | 0x80000000u);
+        const unsigned int before = static_cast<unsigned int>(message->lParam);
+        message->lParam = static_cast<int>((before & kKeepMask) | 1);
+    }
+
     const int result = g_GenerateAutoKeyDown(pThis, edx, message);
 
-    // 客户端 GenerateAutoKeyDown 内部检测到长按自动重复后会返回 0 来阻止技能。
-    // 当 fix 启用时，强制将 0（阻止）覆写为非 0（放行），移除防长按限制。
+    // 出口兜底：即使内部计数器因其他路径触发返回了 0，也强制覆写为 1（放行）。
     if (result == 0 && g_autoKeyDownFixEnabled.load()) {
-        if (message != nullptr
-                && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)) {
-            // 返回值 1 让客户端继续正常处理该技能，不会进入无伤害分支
-            return 1;
-        }
+        return 1;
     }
 
     return result;
