@@ -34,10 +34,6 @@ constexpr WORD kS2CClientRuntimeConfig = 0x1005;
 constexpr DWORD kClientSocketPtr = 0x00BE7914;
 constexpr DWORD kQuestActionClickAddr = 0x00716FE1;
 constexpr DWORD kGenerateAutoKeyDownAddr = 0x0059B2D2;
-constexpr unsigned int kKeyRepeatCountMask = 0x0000FFFF;
-constexpr unsigned int kPreviousKeyStateMask = 0x40000000;
-constexpr unsigned int kTransitionStateMask = 0x80000000;
-
 constexpr int kLegacyRulesVersion = 3;
 constexpr int kVersion = 5; // multi-condition progress (conditionCount per entry)
 constexpr int kAnyId = -1;
@@ -373,19 +369,6 @@ static std::string VirtualKeyName(unsigned int virtualKey) {
         std::snprintf(keyName, sizeof(keyName), "VK_%02X", virtualKey & 0xFF);
         return keyName;
     }
-}
-
-static bool NormalizeAutoKeyDownMessage(ISMSG* message, unsigned int& before, unsigned int& after) {
-    if (message == nullptr || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) {
-        before = 0;
-        after = 0;
-        return false;
-    }
-
-    before = static_cast<unsigned int>(message->lParam);
-    after = (before & ~(kKeyRepeatCountMask | kPreviousKeyStateMask | kTransitionStateMask)) | 1;
-    message->lParam = static_cast<int>(after);
-    return before != after;
 }
 
 static void TraceOutgoingAttackPacket(COutPacket* packet) {
