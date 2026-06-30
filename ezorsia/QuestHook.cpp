@@ -217,6 +217,7 @@ static std::vector<InteractionHookRule> g_characterQuestRules;
 static std::vector<InteractionHookRule> g_mapNpcRules;
 static std::vector<InteractionHookRule> g_dialogTempRules;
 static std::unordered_map<int, std::string> g_progressTextByQuestId;
+static std::unordered_map<int, std::vector<std::pair<int, int>>> g_progressConditionsByQuestId;
 static std::unordered_map<int, PendingRuleBatch> g_pendingRuleBatches;
 static ActivePending g_activePending{};
 static IgnoredQuestAction g_ignoreNextOutgoingQuestAction{};
@@ -703,6 +704,7 @@ static void ClearAllRulesLocked() {
     g_mapNpcRules.clear();
     g_dialogTempRules.clear();
     g_progressTextByQuestId.clear();
+    g_progressConditionsByQuestId.clear();
     g_pendingRuleBatches.clear();
     g_activePending = ActivePending{};
     ClearIgnoreNextQuestActionLocked();
@@ -2007,17 +2009,34 @@ static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId, int
         return false;
     }
 
+    int questEntryState = 0;
     __try {
-        const unsigned char* base = reinterpret_cast<const unsigned char*>(thisPtr);
+        unsigned char* base = reinterpret_cast<unsigned char*>(thisPtr);
         questId = static_cast<int>(*reinterpret_cast<const unsigned short*>(base + 0x0C));
         npcId = *reinterpret_cast<const int*>(base + 0x10);
-        const int questEntryState = *reinterpret_cast<const int*>(base + 0x14);
-        if (questEntryState == 0) {
-            nativeAction = 4;
-        } else if (questEntryState == 1) {
-            nativeAction = 5;
-        } else {
-            nativeAction = 1;
+        questEntryState = *reinterpret_cast<const int*>(base + 0x14);
+
+        // Check progress conditions and override entry state for NPC icon
+        if (questEntryState == 1) {
+            bool allMet = false;
+            // lock_guard cant be used inside __try, use manual lock/unlock
+            g_stateMutex.lock();
+            auto it = g_progressConditionsByQuestId.find(questId);
+            if (it != g_progressConditionsByQuestId.end() && !it->second.empty()) {
+                allMet = true;
+                for (const auto& cond : it->second) {
+                    if (cond.first < cond.second) {
+                        allMet = false;
+                        break;
+                    }
+                }
+            }
+            g_stateMutex.unlock();
+            if (allMet) {
+                *reinterpret_cast<int*>(base + 0x14) = 2;
+                questEntryState = 2;
+                Trace("LocalQuestAction questEntryState override questId=%d 1->2", questId);
+            }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         questId = 0;
@@ -2026,9 +2045,25 @@ static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId, int
         return false;
     }
 
+    if (questEntryState == 0) {
+        nativeAction = 4;
+    } else if (questEntryState == 1) {
+        nativeAction = 5;
+    } else {
+        nativeAction = 1;
+    }
+
     if (questId <= 0 || !ParseQuestAction(static_cast<unsigned char>(nativeAction), actionMask, questState)) {
         return false;
     }
+
+    // Overridden entry state (2) -> nativeAction=1 (QUERY_START)
+    // ParseQuestAction sets questState to kQuestStateNotStarted for action=1
+    // Force questState to STARTED so server questStateMask(STARTED) still matches
+    if (questEntryState == 2 && nativeAction == 1) {
+        questState = kQuestStateStarted;
+    }
+
     return true;
 }
 
@@ -2168,7 +2203,8 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
 
     const unsigned char* cursor = payload + 8;
     const unsigned char* end = payload + payloadSize;
-    std::unordered_map<int, std::string> next;
+    std::unordered_map<int, std::string> nextText;
+    std::unordered_map<int, std::vector<std::pair<int, int>>> nextConditions;
     for (int i = 0; i < count; ++i) {
         if (cursor + 12 > end) {
             Trace("ApplyProgress reject count=%d index=%d reason=entry-short", count, i);
@@ -2186,6 +2222,7 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
         }
 
         std::string combinedText;
+        std::vector<std::pair<int, int>> conditionValues;
         for (int ci = 0; ci < conditionCount; ++ci) {
             if (cursor + 8 > end) {
                 Trace("ApplyProgress reject questId=%d cond=%d reason=cond-short", questId, ci);
@@ -2195,6 +2232,8 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
             cursor += 4;
             const int required = ReadI32(cursor);
             cursor += 4;
+
+            conditionValues.push_back(std::make_pair(current, required));
 
             std::string text;
             if (!ReadPacketString(cursor, end, text)) {
@@ -2212,7 +2251,8 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
             Trace("ApplyProgress reject questId=%d index=%d reason=quest", questId, i);
             return false;
         }
-        next[questId] = combinedText;
+        nextText[questId] = combinedText;
+        nextConditions[questId] = conditionValues;
     }
     if (cursor != end) {
         Trace("ApplyProgress warning count=%d reason=trailing-bytes bytes=%lu",
@@ -2222,7 +2262,8 @@ static bool ApplyProgress(const unsigned char* payload, unsigned long payloadSiz
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
-        g_progressTextByQuestId.swap(next);
+        g_progressTextByQuestId.swap(nextText);
+        g_progressConditionsByQuestId.swap(nextConditions);
     }
     Trace("ApplyProgress ok count=%d", count);
     return true;
