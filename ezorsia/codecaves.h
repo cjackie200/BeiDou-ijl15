@@ -1673,10 +1673,11 @@ __declspec(naked) void skillToolTipNew()
 // EAX = damage value before the 1999 cap check
 __declspec(naked) void ElementalMDamageHook() {
     __asm {
-        pushad                           // save all regs
-        push dword ptr[esp + 28]         // original EAX (damage) as arg
+        pushad // save all regs (32 bytes)
+        sub esp, 12 // align stack to 16 bytes for C call
+        push dword ptr[esp + 40] // original EAX (damage) as arg
         call ApplyCalcDamageElementalBonus
-        add esp, 4
+        add esp, 16 // clean arg(4) + align(12)
         mov[esp + 28], eax               // replace EAX with boosted value
         popad                            // restore all (EAX now boosted)
         cmp eax, esi                     // original instruction 1

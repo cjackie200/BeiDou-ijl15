@@ -10,18 +10,16 @@
 namespace {
 
 // --- Elemental bonus storage (updated by server config packet 0x1006) ---
-// Values are in hundredths: 125 = +25%, 110 = +10%, 0 = no bonus
+// Values are in hundredths: 200 = +100%, 50 = elemental mismatch penalty
 static short g_fireBonus = 0;       // incRMAF
 static short g_poisonBonus = 0;     // incRMAS
 static short g_iceBonus = 0;        // incRMAI
 static short g_lightningBonus = 0;  // incRMAL
-static short g_elemDefault = 0;     // elemDefault (reserved for Phase 2)
+static short g_elemDefault = 0;     // elemDefault
 static std::mutex g_bonusMutex;
 
-// Set by TryApplyElementalBonus to tell CalcDamage hook which element to boost
+// Set by TryApplyElementalBonus for diagnostics.
 static char g_lastSkillElem = 0;
-// Set by CalcDamage hook to prevent TryApplyElementalBonus from double-applying
-static bool g_calcDamageBoosted = false;
 
 // --- Skill ID → element character mapping ---
 // F = Fire, S = Poison, I = Ice, L = Lightning
@@ -107,17 +105,9 @@ static short GetBonusForElement(char elem) {
     }
 }
 
-// Called by CalcDamage::MDamage codecave.
-// Must use C linkage for easy calling from naked asm.
+// Kept as a no-op while native client WZ elemental calculation is authoritative.
 extern "C" int __cdecl ApplyCalcDamageElementalBonus(int damage) {
-    if (g_lastSkillElem == 0) return damage;
-
-    short bonus = GetBonusForElement(g_lastSkillElem);
-    if (bonus <= 0) return damage;
-
-    int boosted = (damage * (int)bonus) / 100;
-    g_calcDamageBoosted = true;
-    return boosted;
+    return damage;
 }
 
 } // anonymous namespace
@@ -181,13 +171,14 @@ bool TryApplyElementalBonus(COutPacket* packet) {
     }
 
     const char elemChar = it->second;
-    g_lastSkillElem = elemChar; // Remember for next CalcDamage::MDamage call
+    g_lastSkillElem = elemChar;
 
-    // --- Get bonus and extract first packet damage for logging ---
     short bonus;
+    short elemDefault;
     {
         std::lock_guard<std::mutex> lock(g_bonusMutex);
         bonus = GetBonusForElement(elemChar);
+        elemDefault = g_elemDefault;
     }
 
     // Fixed damage offset: header(25) + oid(4) + skip14 = 43
@@ -197,54 +188,14 @@ bool TryApplyElementalBonus(COutPacket* packet) {
         firstRawDmg = ReadI32(packet->Data + DMG_OFFSET);
     }
 
-    // If CalcDamage already boosted, skip modification but LOG the real damage
-    if (g_calcDamageBoosted) {
-        g_calcDamageBoosted = false;
-        if (Client::debug) {
-            QuestHookTrace("[DMG] Calc skill=%d e=%c dmg=%d +%d%% F=%d S=%d I=%d L=%d",
-                skillId, elemChar, firstRawDmg, bonus - 100,
-                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
-        }
-        return false;
-    }
-
-    if (bonus <= 0) {
-        if (Client::debug) {
-            QuestHookTrace("[DMG] None skill=%d e=%c dmg=%d F=%d S=%d I=%d L=%d",
-                skillId, elemChar, firstRawDmg,
-                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
-        }
-        return false;
-    }
-
-    // --- Fallback: apply bonus to first damage value in packet ---
-    bool modified = false;
-    int firstNewDmg = 0;
-    int dmgOff = DMG_OFFSET;
-    for (int t = 0; t < numAttacked; t++) {
-        for (int d = 0; d < numDamage; d++) {
-            if (dmgOff + 4 > packet->Size) break;
-            int dmg = ReadI32(packet->Data + dmgOff);
-            if (dmg > 0) {
-                const int nd = (dmg * (int)bonus) / 100;
-                if (nd != dmg) {
-                    WriteI32(packet->Data + dmgOff, nd);
-                    modified = true;
-                    if (!firstNewDmg) { firstRawDmg = dmg; firstNewDmg = nd; }
-                }
-            }
-            dmgOff += 4;
-        }
-        dmgOff += 4; // trailer between targets
-    }
-
     if (Client::debug) {
-        QuestHookTrace("[DMG] Pkt  skill=%d e=%c dmg=%d->%d +%d%% F=%d S=%d I=%d L=%d",
-            skillId, elemChar, firstRawDmg, firstNewDmg, bonus - 100,
-            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
+        const short nativeRate = bonus > 0 ? bonus : elemDefault;
+        QuestHookTrace("[DMG] Native skill=%d e=%c dmg=%d rate=%d F=%d S=%d I=%d L=%d elemDefault=%d",
+            skillId, elemChar, firstRawDmg, nativeRate,
+            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_elemDefault);
     }
 
-    return modified;
+    return false;
 }
 
 } // namespace ElementalWeapon
