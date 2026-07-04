@@ -154,8 +154,15 @@ void Client::UpdateGameStartup() {
 	Memory::WriteInt(0x0078E67D + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
 		Memory::WriteInt(0x007918FC + 1, 2147483646); //CalcDamage::MDamage 999
 
-		// Phase 2: read CMP opcode to identify damage register
-		{ char buf[64]; unsigned char op = *(unsigned char*)0x0079166C; sprintf_s(buf, "Phase2[Diag] MDamage cap opcode=0x%02X", op); OutputDebugStringA(buf); }
+		// Phase 2: read CMP opcode to identify damage register, write to file
+		{
+			unsigned char op = *(unsigned char*)0x0079166C;
+			FILE* f = nullptr;
+			if (fopen_s(&f, "phase2-diag.log", "w") == 0 && f) {
+				fprintf(f, "MDamage cap opcode at 0x0079166C = 0x%02X (0x3D=eax, 0x3F=edi, 0x3B=modrm)\n", op);
+				fclose(f);
+			}
+		}
 
 		Memory::WriteDouble(0x00AFE8A0, setAtkOutCap);	// 输出显示上限
 
