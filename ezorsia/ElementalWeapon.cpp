@@ -18,6 +18,11 @@ static short g_lightningBonus = 0;  // incRMAL
 static short g_elemDefault = 0;     // elemDefault (reserved for Phase 2)
 static std::mutex g_bonusMutex;
 
+// Set by TryApplyElementalBonus to tell CalcDamage hook which element to boost
+static char g_lastSkillElem = 0;
+// Set by CalcDamage hook to prevent TryApplyElementalBonus from double-applying
+static bool g_calcDamageBoosted = false;
+
 // --- Skill ID → element character mapping ---
 // F = Fire, S = Poison, I = Ice, L = Lightning
 // Covers all magic skills with elemental attributes.
@@ -108,6 +113,19 @@ static short GetBonusForElement(char elem) {
     }
 }
 
+// Called by CalcDamage::MDamage codecave.
+// Must use C linkage for easy calling from naked asm.
+extern "C" int __cdecl ApplyCalcDamageElementalBonus(int damage) {
+    if (g_lastSkillElem == 0) return damage;
+
+    short bonus = GetBonusForElement(g_lastSkillElem);
+    if (bonus <= 0) return damage;
+
+    int boosted = (damage * (int)bonus) / 100;
+    g_calcDamageBoosted = true; // prevent TryApplyElementalBonus from double-applying
+    return boosted;
+}
+
 } // anonymous namespace
 
 // --- Public API ---
@@ -164,10 +182,22 @@ bool TryApplyElementalBonus(COutPacket* packet) {
     // Look up skill element
     auto it = kSkillElementMap.find(skillId);
     if (it == kSkillElementMap.end()) {
-        return false; // Not an elemental skill
+        g_lastSkillElem = 0; // Not an elemental skill
+        return false;
     }
 
     const char elemChar = it->second;
+    g_lastSkillElem = elemChar; // Remember for next CalcDamage::MDamage call
+
+    // If CalcDamage already boosted the displayed damage numbers,
+    // those boosted numbers are already in the packet. Skip to avoid double-application.
+    if (g_calcDamageBoosted) {
+        g_calcDamageBoosted = false;
+        if (Client::debug) {
+            QuestHookTrace("ElementalWeapon: packet skip (CalcDamage already boosted) skillId=%d", skillId);
+        }
+        return false;
+    }
 
     short bonus;
     {

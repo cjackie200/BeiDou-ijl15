@@ -18,12 +18,14 @@ struct COutPacket {
 namespace ElementalWeapon {
 
 // Called when the server sends elemental weapon config (opcode 0x1006).
-// payload points to the byte after the 4-byte header; payloadSize is the remaining length.
 void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize);
 
-// Intercepts a magic attack packet (opcode 0x2E) and multiplies each damage
-// number by the matching elemental bonus. Modifies packet data in-place.
+// Intercepts magic attack packets (0x2E) and modifies damage numbers in-place.
 // Returns true if the packet was modified.
 bool TryApplyElementalBonus(COutPacket* packet);
 
 } // namespace ElementalWeapon
+
+// Called from CalcDamage::MDamage codecave (C linkage).
+// Applies weapon elemental bonus to the damage value in EAX.
+extern "C" int __cdecl ApplyCalcDamageElementalBonus(int damage);

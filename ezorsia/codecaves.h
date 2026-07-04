@@ -1,4 +1,8 @@
 #pragma once
+
+// Forward declaration for CalcDamage::MDamage elemental bonus hook
+extern "C" int __cdecl ApplyCalcDamageElementalBonus(int damage);
+
 int nStatusBarY = 0;
 __declspec(naked) void AdjustStatusBar() {
 	__asm {
@@ -995,7 +999,7 @@ __declspec(naked) void fixMouseWheelHook() {
 	}
 }
 
-// ARRAYS ---- ³¤¼üÅÌ¿ªÊ¼
+// ARRAYS ---- ï¿½ï¿½ï¿½ï¿½ï¿½Ì¿ï¿½Ê¼
 unsigned char Array_aDefaultQKM[] = {
 	42, 0, 0, 0,
 	82, 0, 0, 0,
@@ -1315,7 +1319,7 @@ _declspec(naked) void Restore_Array_Expanded() //Thank you Max
 		ret;
 	}
 }
-// ³¤¼üÅÌ½áÊø
+// ï¿½ï¿½ï¿½ï¿½ï¿½Ì½ï¿½ï¿½ï¿½
 
 
 DWORD fixDateFormatRtnAddr = 0x008EBF65;
@@ -1454,14 +1458,14 @@ __declspec(naked) void chatTextPos()
 		cmp[edi + 0D00h], 2
 		jz label_type2
 
-		label_type1 :        // ×´Ì¬1 ÊÕËõ
+		label_type1 :        // ×´Ì¬1 ï¿½ï¿½ï¿½ï¿½
 		sub eax, 1
 		jmp label_rtn
 
-		label_type2 :        // ×´Ì¬2 ÊÕËõ + ÊäÈë
+		label_type2 :        // ×´Ì¬2 ï¿½ï¿½ï¿½ï¿½ + ï¿½ï¿½ï¿½ï¿½
 		jmp label_rtn
 
-		label_type3 :        // ×´Ì¬3 Õ¹¿ª
+		label_type3 :        // ×´Ì¬3 Õ¹ï¿½ï¿½
 		sub eax, 2
 
 		label_rtn :
@@ -1594,7 +1598,7 @@ __declspec(naked) void wordMapUIcc()
 	}
 }
 
-/* ÐÞ¸´¼¼ÄÜÃèÊöÖÐÎÄ»»ÐÐÂÒÂëµÄÎÊÌâ */
+/* ï¿½Þ¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 constexpr int kSkillTooltipLineBytes = 55;
 constexpr int kSkillTooltipScanBytes = 60;
 
@@ -1663,4 +1667,20 @@ __declspec(naked) void skillToolTipNew()
 		lea eax, [ebp - 30h]
 		jmp skillToolTipNewRtn
 	}
+}
+// Phase 2: Hook CalcDamage::MDamage at 0x00791671
+// Original bytes: cmp eax, esi; mov [ebp-0x20], eax (5 bytes)
+// EAX = damage value before the 1999 cap check
+__declspec(naked) void ElementalMDamageHook() {
+    __asm {
+        pushad                           // save all regs
+        push dword ptr[esp + 28]         // original EAX (damage) as arg
+        call ApplyCalcDamageElementalBonus
+        add esp, 4
+        mov[esp + 28], eax               // replace EAX with boosted value
+        popad                            // restore all (EAX now boosted)
+        cmp eax, esi                     // original instruction 1
+        mov[ebp - 0x20], eax             // original instruction 2
+        jmp dword ptr[dwElementalMDamageHookRetn]
+    }
 }

@@ -148,18 +148,22 @@ void Client::UpdateGameStartup() {
 	Memory::WriteInt(0x007806D0 + 1, setAccCap); // 命中，默认999
 	Memory::WriteInt(0x00780702 + 1, setAvdCap); // 回避，默认999
 	Memory::WriteInt(0x0078FF5F + 1, 2147483646); // 计算物理伤害相关，意义不明，默认1999，int 4字节
-	Memory::WriteInt(0x0079166C + 1, 2147483646); // 计算魔攻MDamage的，默认值1999，int 4字节，注意：这里不改的话，打怪输出计算的魔法伤害就是按1999计算的
+	Memory::WriteInt(0x0079166C + 1, 2147483646);
+		Memory::CodeCave(ElementalMDamageHook, dwElementalMDamageHookAddr, 5); // 计算魔攻MDamage的，默认值1999，int 4字节，注意：这里不改的话，打怪输出计算的魔法伤害就是按1999计算的
 	Memory::WriteInt(0x00791CD5 + 1, 2147483646); // 计算魔攻MDamage的，默认值1999，int 4字节，注意：这里不改似乎也不影响输出计算
 	Memory::WriteInt(0x0078E061 + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
 	Memory::WriteInt(0x0078E67D + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
 		Memory::WriteInt(0x007918FC + 1, 2147483646); //CalcDamage::MDamage 999
 
-		// Phase 2: read CMP opcode to identify damage register, write to file
+		// Phase 2: read instruction bytes around CalcDamage::MDamage clamp
 		{
-			unsigned char op = *(unsigned char*)0x0079166C;
+			unsigned char b[16];
+			memcpy(b, (const void*)0x0079166C, 16);
 			FILE* f = nullptr;
 			if (fopen_s(&f, "phase2-diag.log", "w") == 0 && f) {
-				fprintf(f, "MDamage cap opcode at 0x0079166C = 0x%02X (0x3D=eax, 0x3F=edi, 0x3B=modrm)\n", op);
+				fprintf(f, "Bytes at 0x0079166C: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X\n",
+					b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+					b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
 				fclose(f);
 			}
 		}

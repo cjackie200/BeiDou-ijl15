@@ -447,3 +447,6 @@ const DWORD dwLoginFindIDBtn = 0x00620735;
 const DWORD dwLoginSaveIDBtn = 0x006206BE;
 const DWORD dwLoginWebHomeBtn = 0x006208A0;
 const DWORD dwLoginWebRegisterBtn = 0x00620829;
+// Phase 2: CalcDamage::MDamage elemental bonus hook
+const DWORD dwElementalMDamageHookAddr = 0x00791671;
+const DWORD dwElementalMDamageHookRetn = 0x00791676;
