@@ -150,6 +150,9 @@
     <ClInclude Include="QuestHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ElementalTooltip.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="FixIme.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -192,6 +195,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="QuestHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ElementalTooltip.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="SelectCharMacFix.cpp">

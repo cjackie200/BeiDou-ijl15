@@ -9,8 +9,38 @@
 #include "KillProgressBar.h"
 #include "HpMpAlert.h"
 #include "QuestHook.h"
+#include "ElementalTooltip.h"
 #include "SelectCharMacFix.h"
+#include <cstdio>
+#include <cstring>
 #pragma comment(lib, "ws2_32.lib")
+
+static void ElementalTooltipBootTrace(const char* modulePath, const char* message)
+{
+	if (modulePath == nullptr || message == nullptr) return;
+
+	char logPath[MAX_PATH]{};
+	strcpy_s(logPath, modulePath);
+	char* slash = strrchr(logPath, '\\');
+	if (slash == nullptr) return;
+	strcpy_s(slash + 1, MAX_PATH - static_cast<size_t>(slash + 1 - logPath), "elemental-tooltip-boot.log");
+
+	FILE* file = nullptr;
+	if (fopen_s(&file, logPath, "ab") != 0 || file == nullptr) return;
+
+	SYSTEMTIME now{};
+	GetLocalTime(&now);
+	std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u %s\r\n",
+		now.wYear,
+		now.wMonth,
+		now.wDay,
+		now.wHour,
+		now.wMinute,
+		now.wSecond,
+		now.wMilliseconds,
+		message);
+	std::fclose(file);
+}
 
 // config.ini can use IP or hostname (ServerIP_Address=...).
 // The patch expects an IPv4 dotted string; resolve hostnames to IPv4.
@@ -71,6 +101,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		char currentDirectory[MAX_PATH]{};
 		GetModuleFileNameA(hModule, modulePath, MAX_PATH);
 		GetCurrentDirectoryA(MAX_PATH, currentDirectory);
+		ElementalTooltipBootTrace(modulePath, "attach begin");
 		QuestHookTrace("DLL_PROCESS_ATTACH module=%s cwd=%s", modulePath, currentDirectory);
 		InstallQuestDiagnostics();
 		INIReader reader("config.ini");
@@ -138,7 +169,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 		//Hook_com_ptr_t_IWzProperty__ctor(true);
 		//Hook_com_ptr_t_IWzProperty__dtor(true);
 
+		ElementalTooltipBootTrace(modulePath, "before elemental install");
+		ElementalTooltip::Install();
+		ElementalTooltipBootTrace(modulePath, "after elemental install");
 		Client::UpdateGameStartup();
+		ElementalTooltipBootTrace(modulePath, "after update game startup");
 
 		std::cout << "Applying resolution " << Client::m_nGameWidth << "x" << Client::m_nGameHeight << std::endl;
 		Client::UpdateResolution();
