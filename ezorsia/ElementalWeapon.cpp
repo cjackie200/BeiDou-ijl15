@@ -122,7 +122,7 @@ extern "C" int __cdecl ApplyCalcDamageElementalBonus(int damage) {
     if (bonus <= 0) return damage;
 
     int boosted = (damage * (int)bonus) / 100;
-    g_calcDamageBoosted = true; // prevent TryApplyElementalBonus from double-applying
+    g_calcDamageBoosted = true;
     return boosted;
 }
 
@@ -189,69 +189,65 @@ bool TryApplyElementalBonus(COutPacket* packet) {
     const char elemChar = it->second;
     g_lastSkillElem = elemChar; // Remember for next CalcDamage::MDamage call
 
-    // If CalcDamage already boosted the displayed damage numbers,
-    // those boosted numbers are already in the packet. Skip to avoid double-application.
-    if (g_calcDamageBoosted) {
-        g_calcDamageBoosted = false;
-        if (Client::debug) {
-            QuestHookTrace("ElementalWeapon: packet skip (CalcDamage already boosted) skillId=%d", skillId);
-        }
-        return false;
-    }
-
+    // --- Get bonus and extract first packet damage for logging ---
     short bonus;
     {
         std::lock_guard<std::mutex> lock(g_bonusMutex);
         bonus = GetBonusForElement(elemChar);
     }
 
+    // Fixed damage offset: header(25) + oid(4) + skip14 = 43
+    const int DMG_OFFSET = 43;
+    int firstRawDmg = 0;
+    if (packet->Size >= DMG_OFFSET + 4) {
+        firstRawDmg = ReadI32(packet->Data + DMG_OFFSET);
+    }
+
+    // If CalcDamage already boosted, skip modification but LOG the real damage
+    if (g_calcDamageBoosted) {
+        g_calcDamageBoosted = false;
+        if (Client::debug) {
+            QuestHookTrace("[DMG] Calc skill=%d e=%c dmg=%d +%d%% F=%d S=%d I=%d L=%d",
+                skillId, elemChar, firstRawDmg, bonus - 100,
+                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
+        }
+        return false;
+    }
+
     if (bonus <= 0) {
-        return false; // No bonus for this element
+        if (Client::debug) {
+            QuestHookTrace("[DMG] None skill=%d e=%c dmg=%d F=%d S=%d I=%d L=%d",
+                skillId, elemChar, firstRawDmg,
+                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
+        }
+        return false;
     }
 
-    // Compute header size: the fixed header before per-target data varies
-    // slightly by skill type (charge skills are 4 bytes larger).
-    // Use: headerSize = packet->Size - numAttacked * (4 + 14 + 4*numDamage + 4)
-    const unsigned long bytesPerTarget = 4 + 14 + 4 * static_cast<unsigned long>(numDamage) + 4;
-    const unsigned long totalTargetBytes = static_cast<unsigned long>(numAttacked) * bytesPerTarget;
-
-    if (packet->Size < totalTargetBytes + 29) {
-        return false; // Packet too small, malformed
-    }
-
-    const unsigned long headerSize = packet->Size - totalTargetBytes;
-    unsigned long offset = headerSize;
-
+    // --- Fallback: apply bonus to first damage value in packet ---
     bool modified = false;
-
+    int firstNewDmg = 0;
+    int dmgOff = DMG_OFFSET;
     for (int t = 0; t < numAttacked; t++) {
-        // Skip OID (4) + flags (14) = 18 bytes
-        offset += 18;
-
-        // Modify damage values
-        unsigned char* dst = packet->Data + offset;
         for (int d = 0; d < numDamage; d++) {
-            int dmg = ReadI32(dst);
+            if (dmgOff + 4 > packet->Size) break;
+            int dmg = ReadI32(packet->Data + dmgOff);
             if (dmg > 0) {
-                // Apply element bonus: damage * bonus / 100
-                // bonus is in hundredths (125 = +25%)
-                const int newDmg = (dmg * static_cast<int>(bonus)) / 100;
-                if (newDmg != dmg) {
-                    WriteI32(dst, newDmg);
+                const int nd = (dmg * (int)bonus) / 100;
+                if (nd != dmg) {
+                    WriteI32(packet->Data + dmgOff, nd);
                     modified = true;
+                    if (!firstNewDmg) { firstRawDmg = dmg; firstNewDmg = nd; }
                 }
             }
-            dst += 4;
+            dmgOff += 4;
         }
-        offset += 4 * static_cast<unsigned long>(numDamage);
-
-        // Skip trailer (4 bytes)
-        offset += 4;
+        dmgOff += 4; // trailer between targets
     }
 
-    if (modified && Client::debug) {
-        QuestHookTrace("ElementalWeapon: skillId=%d element=%c bonus=%d.%02d targets=%d lines=%d",
-            skillId, elemChar, bonus / 100, bonus % 100, numAttacked, numDamage);
+    if (Client::debug) {
+        QuestHookTrace("[DMG] Pkt  skill=%d e=%c dmg=%d->%d +%d%% F=%d S=%d I=%d L=%d",
+            skillId, elemChar, firstRawDmg, firstNewDmg, bonus - 100,
+            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus);
     }
 
     return modified;
