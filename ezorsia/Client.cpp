@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "AddyLocations.h"
 #include "codecaves.h"
 #include "FixIme.h"
@@ -152,10 +152,12 @@ void Client::UpdateGameStartup() {
 	Memory::WriteInt(0x00791CD5 + 1, 2147483646); // 计算魔攻MDamage的，默认值1999，int 4字节，注意：这里不改似乎也不影响输出计算
 	Memory::WriteInt(0x0078E061 + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
 	Memory::WriteInt(0x0078E67D + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
-	Memory::WriteInt(0x007918FC + 1, 2147483646); //CalcDamage::MDamage 999，意义不明，int 4字节
+		Memory::WriteInt(0x007918FC + 1, 2147483646); //CalcDamage::MDamage 999
 
-	Memory::WriteDouble(0x00AFE8A0, setAtkOutCap);	// 输出显示上限，默认199999，double 8字节
+		// Phase 2: read CMP opcode to identify damage register
+		{ char buf[64]; unsigned char op = *(unsigned char*)0x0079166C; sprintf_s(buf, "Phase2[Diag] MDamage cap opcode=0x%02X", op); OutputDebugStringA(buf); }
 
+		Memory::WriteDouble(0x00AFE8A0, setAtkOutCap);	// 输出显示上限
 
 	Memory::WriteInt(0x00780743 + 3, speedMovementCap); //set speed cap //ty ronan
 	Memory::WriteInt(0x008C4286 + 1, speedMovementCap); //set speed cap //ty ronan

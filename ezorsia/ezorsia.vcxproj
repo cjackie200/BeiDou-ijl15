@@ -175,6 +175,7 @@
     <ClInclude Include="KillProgressBar.h" />
     <ClInclude Include="HpMpAlert.h" />
     <ClInclude Include="QuestHook.h" />
+    <ClInclude Include="ElementalWeapon.h" />
     <ClInclude Include="Client.h" />
     <ClInclude Include="FixBuddy.h" />
     <ClInclude Include="FixIme.h" />
@@ -217,6 +218,7 @@
     <ClCompile Include="KillProgressBar.cpp" />
     <ClCompile Include="HpMpAlert.cpp" />
     <ClCompile Include="QuestHook.cpp" />
+    <ClCompile Include="ElementalWeapon.cpp" />
     <ClCompile Include="Client.cpp" />
     <ClCompile Include="ijl15.cpp" />
     <ClCompile Include="ZAllocEx.cpp" />

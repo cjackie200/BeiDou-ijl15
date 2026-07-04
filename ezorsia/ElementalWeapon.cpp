@@ -1,0 +1,230 @@
+#include "stdafx.h"
+#include "ElementalWeapon.h"
+#include "Client.h"
+#include "QuestHook.h"
+
+#include <cstdint>
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+
+// --- Elemental bonus storage (updated by server config packet 0x1006) ---
+// Values are in hundredths: 125 = +25%, 110 = +10%, 0 = no bonus
+static short g_fireBonus = 0;       // incRMAF
+static short g_poisonBonus = 0;     // incRMAS
+static short g_iceBonus = 0;        // incRMAI
+static short g_lightningBonus = 0;  // incRMAL
+static short g_elemDefault = 0;     // elemDefault (reserved for Phase 2)
+static std::mutex g_bonusMutex;
+
+// --- Skill ID → element character mapping ---
+// F = Fire, S = Poison, I = Ice, L = Lightning
+// Covers all magic skills with elemental attributes.
+static std::unordered_map<int, char> BuildSkillElementMap() {
+    std::unordered_map<int, char> m;
+
+    // === Fire/Poison Wizard ===
+    m[2101004] = 'F'; // Fire Arrow
+    m[2101005] = 'S'; // Poison Breath
+
+    // === Fire/Poison Mage ===
+    m[2111002] = 'F'; // Explosion
+    m[2111003] = 'S'; // Poison Mist
+    m[2111005] = 'F'; // Element Composition (FP)
+
+    // === Fire/Poison ArchMage ===
+    m[2121003] = 'F'; // Fire Demon
+    m[2121004] = 'F'; // Meteor Shower
+    m[2121005] = 'S'; // Paralyze
+
+    // === Ice/Lightning Wizard ===
+    m[2201001] = 'I'; // Cold Beam
+    m[2201004] = 'L'; // Thunder Bolt
+
+    // === Ice/Lightning Mage ===
+    m[2211002] = 'I'; // Ice Strike
+    m[2211004] = 'L'; // Thunder Spear
+    m[2211006] = 'I'; // Element Composition (IL)
+
+    // === Ice/Lightning ArchMage ===
+    m[2221003] = 'I'; // Ice Demon
+    m[2221004] = 'I'; // Blizzard
+    m[2221006] = 'L'; // Chain Lightning
+
+    // === Cleric/Priest/Bishop ===
+    m[2301005] = 'H'; // Holy Arrow
+    m[2311004] = 'H'; // Shining Ray
+    m[2321007] = 'H'; // Angel Ray
+
+    // === Blaze Wizard ===
+    m[12001004] = 'F'; // Fire Arrow (BW)
+    m[12101004] = 'F'; // Fire Pillar
+    m[12111005] = 'F'; // Element Composition (BW)
+    m[12111006] = 'F'; // Flame Gear
+
+    // === Evan ===
+    m[22121000] = 'F'; // Fire Circle
+    m[22141002] = 'I'; // Ice Breath (Evan)
+    m[22141004] = 'L'; // Thunder Circle
+    m[22151002] = 'F'; // Fire Breath (Evan)
+    m[22171051] = 'F'; // Blaze
+    m[22181001] = 'S'; // Poison Circle
+
+    return m;
+}
+
+static const std::unordered_map<int, char> kSkillElementMap = BuildSkillElementMap();
+
+// --- Utility ---
+
+static unsigned short ReadU16(const unsigned char* ptr) {
+    return static_cast<unsigned short>(ptr[0] | (ptr[1] << 8));
+}
+
+static int ReadI32(const unsigned char* ptr) {
+    return static_cast<int>(
+        static_cast<unsigned int>(ptr[0])
+        | (static_cast<unsigned int>(ptr[1]) << 8)
+        | (static_cast<unsigned int>(ptr[2]) << 16)
+        | (static_cast<unsigned int>(ptr[3]) << 24));
+}
+
+static void WriteI32(unsigned char* ptr, int value) {
+    ptr[0] = static_cast<unsigned char>(value & 0xFF);
+    ptr[1] = static_cast<unsigned char>((value >> 8) & 0xFF);
+    ptr[2] = static_cast<unsigned char>((value >> 16) & 0xFF);
+    ptr[3] = static_cast<unsigned char>((value >> 24) & 0xFF);
+}
+
+static short GetBonusForElement(char elem) {
+    switch (elem) {
+    case 'F': return g_fireBonus;
+    case 'S': return g_poisonBonus;
+    case 'I': return g_iceBonus;
+    case 'L': return g_lightningBonus;
+    case 'H': return 0; // Holy — no weapon with incRMAH exists
+    default:  return 0;
+    }
+}
+
+} // anonymous namespace
+
+// --- Public API ---
+
+namespace ElementalWeapon {
+
+void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize) {
+    if (payloadSize < 10) {
+        return; // Minimum: 5 shorts = 10 bytes
+    }
+
+    short fireBonus = static_cast<short>(ReadU16(payload));
+    short poisonBonus = static_cast<short>(ReadU16(payload + 2));
+    short iceBonus = static_cast<short>(ReadU16(payload + 4));
+    short lightningBonus = static_cast<short>(ReadU16(payload + 6));
+    short elemDefault = static_cast<short>(ReadU16(payload + 8));
+
+    {
+        std::lock_guard<std::mutex> lock(g_bonusMutex);
+        g_fireBonus = fireBonus;
+        g_poisonBonus = poisonBonus;
+        g_iceBonus = iceBonus;
+        g_lightningBonus = lightningBonus;
+        g_elemDefault = elemDefault;
+    }
+
+    if (Client::debug) {
+        QuestHookTrace("ElementalWeapon config: F=%d S=%d I=%d L=%d elemDefault=%d",
+            fireBonus, poisonBonus, iceBonus, lightningBonus, elemDefault);
+    }
+}
+
+bool TryApplyElementalBonus(COutPacket* packet) {
+    if (packet == nullptr || packet->Data == nullptr || packet->Size < 29) {
+        return false;
+    }
+
+    const unsigned char* data = packet->Data;
+    const unsigned short opcode = ReadU16(data);
+    if (opcode != 0x002E) {
+        return false; // Not a magic attack
+    }
+
+    const unsigned char attackedAndDamage = data[3];
+    const int numAttacked = (attackedAndDamage >> 4) & 0x0F;
+    const int numDamage = attackedAndDamage & 0x0F;
+
+    if (numAttacked == 0 || numDamage == 0) {
+        return false;
+    }
+
+    const int skillId = ReadI32(data + 4);
+
+    // Look up skill element
+    auto it = kSkillElementMap.find(skillId);
+    if (it == kSkillElementMap.end()) {
+        return false; // Not an elemental skill
+    }
+
+    const char elemChar = it->second;
+
+    short bonus;
+    {
+        std::lock_guard<std::mutex> lock(g_bonusMutex);
+        bonus = GetBonusForElement(elemChar);
+    }
+
+    if (bonus <= 0) {
+        return false; // No bonus for this element
+    }
+
+    // Compute header size: the fixed header before per-target data varies
+    // slightly by skill type (charge skills are 4 bytes larger).
+    // Use: headerSize = packet->Size - numAttacked * (4 + 14 + 4*numDamage + 4)
+    const unsigned long bytesPerTarget = 4 + 14 + 4 * static_cast<unsigned long>(numDamage) + 4;
+    const unsigned long totalTargetBytes = static_cast<unsigned long>(numAttacked) * bytesPerTarget;
+
+    if (packet->Size < totalTargetBytes + 29) {
+        return false; // Packet too small, malformed
+    }
+
+    const unsigned long headerSize = packet->Size - totalTargetBytes;
+    unsigned long offset = headerSize;
+
+    bool modified = false;
+
+    for (int t = 0; t < numAttacked; t++) {
+        // Skip OID (4) + flags (14) = 18 bytes
+        offset += 18;
+
+        // Modify damage values
+        unsigned char* dst = packet->Data + offset;
+        for (int d = 0; d < numDamage; d++) {
+            int dmg = ReadI32(dst);
+            if (dmg > 0) {
+                // Apply element bonus: damage * bonus / 100
+                // bonus is in hundredths (125 = +25%)
+                const int newDmg = (dmg * static_cast<int>(bonus)) / 100;
+                if (newDmg != dmg) {
+                    WriteI32(dst, newDmg);
+                    modified = true;
+                }
+            }
+            dst += 4;
+        }
+        offset += 4 * static_cast<unsigned long>(numDamage);
+
+        // Skip trailer (4 bytes)
+        offset += 4;
+    }
+
+    if (modified && Client::debug) {
+        QuestHookTrace("ElementalWeapon: skillId=%d element=%c bonus=%d.%02d targets=%d lines=%d",
+            skillId, elemChar, bonus / 100, bonus % 100, numAttacked, numDamage);
+    }
+
+    return modified;
+}
+
+} // namespace ElementalWeapon

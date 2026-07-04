@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "QuestHook.h"
+#include "ElementalWeapon.h"
 
 #include <atomic>
 #include <cctype>
@@ -20,6 +21,7 @@ constexpr WORD kRecvRangedAttack = 0x002D;
 constexpr WORD kRecvMagicAttack = 0x002E;
 constexpr WORD kRecvCustomPacket = 0x3713;
 constexpr WORD kCustomInteractionHookEvent = 0x1003;
+constexpr WORD kS2CElementalWeaponConfig = 0x1006;
 
 constexpr WORD kSendSpawnNpc = 0x0101;
 constexpr WORD kSendRemoveNpc = 0x0102;
@@ -91,18 +93,6 @@ constexpr int kMaxRulesPerPacket = 100;
 constexpr int kMaxRuleCount = 20000;
 constexpr ULONGLONG kPendingRuleBatchTimeoutMs = 5000;
 constexpr ULONGLONG kIgnoreNextQuestActionTimeoutMs = 1500;
-
-struct COutPacket {
-    int Loopback;
-    union {
-        unsigned char* Data;
-        void* Unk;
-        unsigned short* Header;
-    };
-    unsigned long Size;
-    unsigned int Offset;
-    int EncryptedByShanda;
-};
 
 struct CInPacket {
     bool Loopback;
@@ -2283,6 +2273,13 @@ static IncomingResult HandleIncomingAtOffset(CInPacket* packet, unsigned long he
         Trace("Incoming client runtime config opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         return ApplyClientRuntimeConfig(payload, payloadSize) ? IncomingResult::Consumed : IncomingResult::None;
     }
+    if (opcode == kS2CElementalWeaponConfig) {
+        if (Client::debug) {
+            Trace("Incoming elemental weapon config opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
+        }
+        ElementalWeapon::HandleConfigPacket(payload, payloadSize);
+        return IncomingResult::Consumed; // Custom opcode — client doesn't understand it
+    }
 
     TrackIncomingPacket(opcode, payload, payloadSize);
     return IncomingResult::None;
@@ -2299,6 +2296,7 @@ static bool HandleIncoming(CInPacket* packet) {
 
 static bool TryInterceptOutgoing(void* socket, void* edx, COutPacket* packet) {
     TraceOutgoingAttackPacket(packet);
+    ElementalWeapon::TryApplyElementalBonus(packet);
 
     if (TryInterceptNpcTalk(socket, edx, packet)) {
         return true;
