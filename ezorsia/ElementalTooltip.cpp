@@ -37,7 +37,7 @@ constexpr DWORD kEquipTooltipDetailFrameProc = 0x00AD4F8F;
 
 constexpr int kElementTooltipRows = 2;
 constexpr int kElementTooltipLineHeight = 0x10;
-constexpr int kElementTooltipExtraHeight = 0x18;
+constexpr int kElementTooltipExtraHeight = 0x10;
 constexpr int kTooltipWidth = 0x122;
 constexpr int kPercentStatLineMode = 2;
 
@@ -844,36 +844,11 @@ void Install() {
     }
     installed = true;
 
-    QuestHookTrace("ElementalTooltip hooks installing height=0x%08X draw=0x%08X equipHeight=0x%08X magicStat=0x%08X",
-        kHeightHookAddr,
-        kDrawHookAddr,
+    QuestHookTrace("ElementalTooltip hooks installing equipHeight=0x%08X magicStat=0x%08X",
         kEquipMakeLayerCallAddr,
         kEquipMagicAttackStatCallAddr);
-    Memory::CodeCave(ElementalTooltipHeightHook, kHeightHookAddr, 5);
-    Memory::CodeCave(ElementalTooltipDrawHook, kDrawHookAddr, 5);
-    Memory::CodeCave(EquipTooltipDetailHook, kEquipTooltipDetailAddr, 5);
     Memory::CodeCave(EquipMakeLayerHook, kEquipMakeLayerCallAddr, 5);
     Memory::CodeCave(EquipMagicAttackStatHook, kEquipMagicAttackStatCallAddr, 5);
-    TooltipTrace("installed height=0x%08X bytes=%02X %02X %02X %02X %02X draw=0x%08X bytes=%02X %02X %02X %02X %02X",
-        kHeightHookAddr,
-        *reinterpret_cast<unsigned char*>(kHeightHookAddr),
-        *reinterpret_cast<unsigned char*>(kHeightHookAddr + 1),
-        *reinterpret_cast<unsigned char*>(kHeightHookAddr + 2),
-        *reinterpret_cast<unsigned char*>(kHeightHookAddr + 3),
-        *reinterpret_cast<unsigned char*>(kHeightHookAddr + 4),
-        kDrawHookAddr,
-        *reinterpret_cast<unsigned char*>(kDrawHookAddr),
-        *reinterpret_cast<unsigned char*>(kDrawHookAddr + 1),
-        *reinterpret_cast<unsigned char*>(kDrawHookAddr + 2),
-        *reinterpret_cast<unsigned char*>(kDrawHookAddr + 3),
-        *reinterpret_cast<unsigned char*>(kDrawHookAddr + 4));
-    TooltipTrace("detail hook addr=0x%08X bytes=%02X %02X %02X %02X %02X",
-        kEquipTooltipDetailAddr,
-        *reinterpret_cast<unsigned char*>(kEquipTooltipDetailAddr),
-        *reinterpret_cast<unsigned char*>(kEquipTooltipDetailAddr + 1),
-        *reinterpret_cast<unsigned char*>(kEquipTooltipDetailAddr + 2),
-        *reinterpret_cast<unsigned char*>(kEquipTooltipDetailAddr + 3),
-        *reinterpret_cast<unsigned char*>(kEquipTooltipDetailAddr + 4));
     TooltipTrace("equip hooks height=0x%08X bytes=%02X %02X %02X %02X %02X magicStat=0x%08X bytes=%02X %02X %02X %02X %02X",
         kEquipMakeLayerCallAddr,
         *reinterpret_cast<unsigned char*>(kEquipMakeLayerCallAddr),
@@ -887,9 +862,7 @@ void Install() {
         *reinterpret_cast<unsigned char*>(kEquipMagicAttackStatCallAddr + 2),
         *reinterpret_cast<unsigned char*>(kEquipMagicAttackStatCallAddr + 3),
         *reinterpret_cast<unsigned char*>(kEquipMagicAttackStatCallAddr + 4));
-    QuestHookTrace("ElementalTooltip hooks installed height=0x%08X draw=0x%08X equipHeight=0x%08X magicStat=0x%08X",
-        kHeightHookAddr,
-        kDrawHookAddr,
+    QuestHookTrace("ElementalTooltip hooks installed equipHeight=0x%08X magicStat=0x%08X",
         kEquipMakeLayerCallAddr,
         kEquipMagicAttackStatCallAddr);
 }
