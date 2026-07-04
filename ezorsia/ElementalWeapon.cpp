@@ -29,52 +29,46 @@ static bool g_calcDamageBoosted = false;
 static std::unordered_map<int, char> BuildSkillElementMap() {
     std::unordered_map<int, char> m;
 
-    // === Fire/Poison Wizard ===
-    m[2101004] = 'F'; // Fire Arrow
-    m[2101005] = 'S'; // Poison Breath
+    // === CHINESE WZ SKILL IDs (verified 2026-07-04) ===
+    // Fire/Poison Wizard
+    m[2101004] = 'F'; // 火焰箭
+    m[2101005] = 'S'; // 毒雾术
 
-    // === Fire/Poison Mage ===
-    m[2111002] = 'F'; // Explosion
-    m[2111003] = 'S'; // Poison Mist
-    m[2111005] = 'F'; // Element Composition (FP)
+    // Fire/Poison Mage
+    m[2111002] = 'F'; // 末日烈焰
+    m[2111003] = 'S'; // 致命毒雾
+    m[2111006] = 'F'; // 火毒合击
 
-    // === Fire/Poison ArchMage ===
-    m[2121003] = 'F'; // Fire Demon
-    m[2121004] = 'F'; // Meteor Shower
-    m[2121005] = 'S'; // Paralyze
+    // Fire/Poison ArchMage
+    m[2121003] = 'F'; // 火凤球
+    m[2121005] = 'S'; // 冰破魔兽
+    m[2121007] = 'F'; // 天降落星
 
-    // === Ice/Lightning Wizard ===
-    m[2201001] = 'I'; // Cold Beam
-    m[2201004] = 'L'; // Thunder Bolt
+    // Ice/Lightning Wizard
+    m[2201004] = 'I'; // 冰冻术
+    m[2201005] = 'L'; // 雷电术
 
-    // === Ice/Lightning Mage ===
-    m[2211002] = 'I'; // Ice Strike
-    m[2211004] = 'L'; // Thunder Spear
-    m[2211006] = 'I'; // Element Composition (IL)
+    // Ice/Lightning Mage
+    m[2211002] = 'I'; // 冰咆哮
+    m[2211003] = 'L'; // 落雷枪
+    m[2211006] = 'I'; // 冰雷合击
 
-    // === Ice/Lightning ArchMage ===
-    m[2221003] = 'I'; // Ice Demon
-    m[2221004] = 'I'; // Blizzard
-    m[2221006] = 'L'; // Chain Lightning
+    // Ice/Lightning ArchMage
+    m[2221003] = 'I'; // 冰凤球
+    m[2221006] = 'L'; // 链环闪电
+    m[2221007] = 'I'; // 落霜冰破
 
-    // === Cleric/Priest/Bishop ===
-    m[2301005] = 'H'; // Holy Arrow
-    m[2311004] = 'H'; // Shining Ray
-    m[2321007] = 'H'; // Angel Ray
+    // Cleric/Priest/Bishop
+    m[2301005] = 'H'; // 圣箭术
+    m[2311004] = 'H'; // 圣光
+    m[2321007] = 'H'; // 光芒飞箭
 
-    // === Blaze Wizard ===
-    m[12001004] = 'F'; // Fire Arrow (BW)
-    m[12101004] = 'F'; // Fire Pillar
-    m[12111005] = 'F'; // Element Composition (BW)
-    m[12111006] = 'F'; // Flame Gear
-
-    // === Evan ===
-    m[22121000] = 'F'; // Fire Circle
-    m[22141002] = 'I'; // Ice Breath (Evan)
-    m[22141004] = 'L'; // Thunder Circle
-    m[22151002] = 'F'; // Fire Breath (Evan)
-    m[22171051] = 'F'; // Blaze
-    m[22181001] = 'S'; // Poison Circle
+    // Blaze Wizard (Chinese WZ)
+    m[12001004] = 'F'; // 炎精灵
+    m[12111003] = 'F'; // 天降落星(BW)
+    m[12111004] = 'F'; // 火魔兽(BW)
+    m[12111005] = 'F'; // 火牢术屏障
+    m[12111006] = 'F'; // 火风暴
 
     return m;
 }
