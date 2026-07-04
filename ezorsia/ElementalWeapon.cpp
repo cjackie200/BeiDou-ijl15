@@ -15,6 +15,7 @@ static short g_fireBonus = 0;       // incRMAF
 static short g_poisonBonus = 0;     // incRMAS
 static short g_iceBonus = 0;        // incRMAI
 static short g_lightningBonus = 0;  // incRMAL
+static short g_holyBonus = 0;       // incRMAH
 static short g_elemDefault = 0;     // elemDefault
 static std::mutex g_bonusMutex;
 
@@ -22,7 +23,7 @@ static std::mutex g_bonusMutex;
 static char g_lastSkillElem = 0;
 
 // --- Skill ID → element character mapping ---
-// F = Fire, S = Poison, I = Ice, L = Lightning
+// F = Fire, S = Poison, I = Ice, L = Lightning, H = Holy
 // Covers all magic skills with elemental attributes.
 static std::unordered_map<int, char> BuildSkillElementMap() {
     std::unordered_map<int, char> m;
@@ -100,7 +101,7 @@ static short GetBonusForElement(char elem) {
     case 'S': return g_poisonBonus;
     case 'I': return g_iceBonus;
     case 'L': return g_lightningBonus;
-    case 'H': return 0; // Holy — no weapon with incRMAH exists
+    case 'H': return g_holyBonus;
     default:  return 0;
     }
 }
@@ -118,14 +119,21 @@ namespace ElementalWeapon {
 
 void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize) {
     if (payloadSize < 10) {
-        return; // Minimum: 5 shorts = 10 bytes
+        return; // Minimum legacy packet: 5 shorts = 10 bytes
     }
 
     short fireBonus = static_cast<short>(ReadU16(payload));
     short poisonBonus = static_cast<short>(ReadU16(payload + 2));
     short iceBonus = static_cast<short>(ReadU16(payload + 4));
     short lightningBonus = static_cast<short>(ReadU16(payload + 6));
-    short elemDefault = static_cast<short>(ReadU16(payload + 8));
+    short holyBonus = 0;
+    short elemDefault = 0;
+    if (payloadSize >= 12) {
+        holyBonus = static_cast<short>(ReadU16(payload + 8));
+        elemDefault = static_cast<short>(ReadU16(payload + 10));
+    } else {
+        elemDefault = static_cast<short>(ReadU16(payload + 8));
+    }
 
     {
         std::lock_guard<std::mutex> lock(g_bonusMutex);
@@ -133,12 +141,13 @@ void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize)
         g_poisonBonus = poisonBonus;
         g_iceBonus = iceBonus;
         g_lightningBonus = lightningBonus;
+        g_holyBonus = holyBonus;
         g_elemDefault = elemDefault;
     }
 
     if (Client::debug) {
-        QuestHookTrace("ElementalWeapon config: F=%d S=%d I=%d L=%d elemDefault=%d",
-            fireBonus, poisonBonus, iceBonus, lightningBonus, elemDefault);
+        QuestHookTrace("ElementalWeapon config: F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+            fireBonus, poisonBonus, iceBonus, lightningBonus, holyBonus, elemDefault);
     }
 }
 
@@ -190,9 +199,9 @@ bool TryApplyElementalBonus(COutPacket* packet) {
 
     if (Client::debug) {
         const short nativeRate = bonus > 0 ? bonus : elemDefault;
-        QuestHookTrace("[DMG] Native skill=%d e=%c dmg=%d rate=%d F=%d S=%d I=%d L=%d elemDefault=%d",
+        QuestHookTrace("[DMG] Native skill=%d e=%c dmg=%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
             skillId, elemChar, firstRawDmg, nativeRate,
-            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_elemDefault);
+            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
     }
 
     return false;
