@@ -4,12 +4,12 @@
 
 本仓库是 Windows MSVC C++ DLL 工程，不是 WSL g++ / clang 工程。WSL 只负责调用 Windows
 构建工具。不要因为 `where msbuild` 或 `dotnet msbuild` 失败就判断本机不能编译；优先使用
-当前可用的 VS 2019 BuildTools 完整路径。
+当前可用的 VS 2022 BuildTools 完整路径。
 
 推荐从 WSL 执行：
 
 ```bash
-powershell.exe -NoProfile -Command '& "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\MSBuild.exe" "D:\Game\BeiDou\BeiDou-ijl15\ezorsia.sln" /p:Configuration=Release /p:Platform=x86 /m:1'
+powershell.exe -NoProfile -Command '& "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe" "D:\Game\BeiDou\BeiDou-ijl15\ezorsia.sln" /p:Configuration=Release /p:Platform=x86 /m:1'
 ```
 
 solution 的 `Release|x86` 映射到项目 `Release|Win32`。产物路径：
