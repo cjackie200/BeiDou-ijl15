@@ -31,9 +31,9 @@ static std::unordered_map<int, const char*> BuildSkillElementMap() {
     m[2101005] = "S"; // 毒雾术
 
     // Fire/Poison Mage
-    m[2111002] = "F";  // 末日烈焰
-    m[2111003] = "S";  // 致命毒雾
-    m[2111006] = "FS"; // 火毒合击
+    m[2111002] = "F"; // 末日烈焰
+    m[2111003] = "S"; // 致命毒雾
+    m[2111006] = "F"; // 火毒合击
 
     // Fire/Poison ArchMage
     m[2121003] = "F"; // 火凤球
@@ -45,9 +45,9 @@ static std::unordered_map<int, const char*> BuildSkillElementMap() {
     m[2201005] = "L"; // 雷电术
 
     // Ice/Lightning Mage
-    m[2211002] = "I";  // 冰咆哮
-    m[2211003] = "L";  // 落雷枪
-    m[2211006] = "IL"; // 冰雷合击
+    m[2211002] = "I"; // 冰咆哮
+    m[2211003] = "L"; // 落雷枪
+    m[2211006] = "I"; // 冰雷合击
 
     // Ice/Lightning ArchMage
     m[2221003] = "I"; // 冰凤球
@@ -118,7 +118,7 @@ static short GetBestBonusForElements(const char* elements) {
     return bestBonus;
 }
 
-static bool IsMixedElementSkill(int skillId) {
+static bool NeedsElementPacketPatch(int skillId) {
     return skillId == 2111006 || skillId == 2211006;
 }
 
@@ -266,14 +266,14 @@ bool TryApplyElementalBonus(COutPacket* packet) {
     int firstPatchedRawDmg = 0;
     int firstPatchedNewDmg = 0;
     bool modified = false;
-    if (IsMixedElementSkill(skillId)) {
+    if (NeedsElementPacketPatch(skillId)) {
         modified = ApplyRateToMagicAttackPacket(packet, numAttacked, numDamage, effectiveRate,
             &firstPatchedRawDmg, &firstPatchedNewDmg);
     }
 
     if (Client::debug) {
         if (modified) {
-            QuestHookTrace("[DMG] Mixed skill=%d e=%s dmg=%d->%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+            QuestHookTrace("[DMG] Patch skill=%d e=%s dmg=%d->%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
                 skillId, elemChars, firstPatchedRawDmg, firstPatchedNewDmg, effectiveRate,
                 g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
         } else {
