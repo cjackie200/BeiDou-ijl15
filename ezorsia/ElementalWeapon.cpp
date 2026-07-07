@@ -19,60 +19,57 @@ static short g_holyBonus = 0;       // incRMAH
 static short g_elemDefault = 0;     // elemDefault
 static std::mutex g_bonusMutex;
 
-// Set by TryApplyElementalBonus for diagnostics.
-static char g_lastSkillElem = 0;
-
 // --- Skill ID → element character mapping ---
 // F = Fire, S = Poison, I = Ice, L = Lightning, H = Holy
 // Covers all magic skills with elemental attributes.
-static std::unordered_map<int, char> BuildSkillElementMap() {
-    std::unordered_map<int, char> m;
+static std::unordered_map<int, const char*> BuildSkillElementMap() {
+    std::unordered_map<int, const char*> m;
 
     // === CHINESE WZ SKILL IDs (verified 2026-07-04) ===
     // Fire/Poison Wizard
-    m[2101004] = 'F'; // 火焰箭
-    m[2101005] = 'S'; // 毒雾术
+    m[2101004] = "F"; // 火焰箭
+    m[2101005] = "S"; // 毒雾术
 
     // Fire/Poison Mage
-    m[2111002] = 'F'; // 末日烈焰
-    m[2111003] = 'S'; // 致命毒雾
-    m[2111006] = 'F'; // 火毒合击
+    m[2111002] = "F";  // 末日烈焰
+    m[2111003] = "S";  // 致命毒雾
+    m[2111006] = "FS"; // 火毒合击
 
     // Fire/Poison ArchMage
-    m[2121003] = 'F'; // 火凤球
-    m[2121005] = 'S'; // 冰破魔兽
-    m[2121007] = 'F'; // 天降落星
+    m[2121003] = "F"; // 火凤球
+    m[2121005] = "S"; // 冰破魔兽
+    m[2121007] = "F"; // 天降落星
 
     // Ice/Lightning Wizard
-    m[2201004] = 'I'; // 冰冻术
-    m[2201005] = 'L'; // 雷电术
+    m[2201004] = "I"; // 冰冻术
+    m[2201005] = "L"; // 雷电术
 
     // Ice/Lightning Mage
-    m[2211002] = 'I'; // 冰咆哮
-    m[2211003] = 'L'; // 落雷枪
-    m[2211006] = 'I'; // 冰雷合击
+    m[2211002] = "I";  // 冰咆哮
+    m[2211003] = "L";  // 落雷枪
+    m[2211006] = "IL"; // 冰雷合击
 
     // Ice/Lightning ArchMage
-    m[2221003] = 'I'; // 冰凤球
-    m[2221006] = 'L'; // 链环闪电
-    m[2221007] = 'I'; // 落霜冰破
+    m[2221003] = "I"; // 冰凤球
+    m[2221006] = "L"; // 链环闪电
+    m[2221007] = "I"; // 落霜冰破
 
     // Cleric/Priest/Bishop
-    m[2301005] = 'H'; // 圣箭术
-    m[2311004] = 'H'; // 圣光
-    m[2321007] = 'H'; // 光芒飞箭
+    m[2301005] = "H"; // 圣箭术
+    m[2311004] = "H"; // 圣光
+    m[2321007] = "H"; // 光芒飞箭
 
     // Blaze Wizard (Chinese WZ)
-    m[12001004] = 'F'; // 炎精灵
-    m[12111003] = 'F'; // 天降落星(BW)
-    m[12111004] = 'F'; // 火魔兽(BW)
-    m[12111005] = 'F'; // 火牢术屏障
-    m[12111006] = 'F'; // 火风暴
+    m[12001004] = "F"; // 炎精灵
+    m[12111003] = "F"; // 天降落星(BW)
+    m[12111004] = "F"; // 火魔兽(BW)
+    m[12111005] = "F"; // 火牢术屏障
+    m[12111006] = "F"; // 火风暴
 
     return m;
 }
 
-static const std::unordered_map<int, char> kSkillElementMap = BuildSkillElementMap();
+static const std::unordered_map<int, const char*> kSkillElementMap = BuildSkillElementMap();
 
 // --- Utility ---
 
@@ -104,6 +101,72 @@ static short GetBonusForElement(char elem) {
     case 'H': return g_holyBonus;
     default:  return 0;
     }
+}
+
+static short GetBestBonusForElements(const char* elements) {
+    if (elements == nullptr) {
+        return 0;
+    }
+
+    short bestBonus = 0;
+    for (const char* elem = elements; *elem != '\0'; ++elem) {
+        short bonus = GetBonusForElement(*elem);
+        if (bonus > bestBonus) {
+            bestBonus = bonus;
+        }
+    }
+    return bestBonus;
+}
+
+static bool IsMixedElementSkill(int skillId) {
+    return skillId == 2111006 || skillId == 2211006;
+}
+
+static bool ApplyRateToMagicAttackPacket(COutPacket* packet, int numAttacked, int numDamage, short rate, int* firstRawDmg, int* firstNewDmg) {
+    if (packet == nullptr || packet->Data == nullptr || rate <= 0 || rate == 100) {
+        return false;
+    }
+
+    const unsigned long bytesPerTarget = 4 + 14 + 4 * static_cast<unsigned long>(numDamage) + 4;
+    const unsigned long totalTargetBytes = static_cast<unsigned long>(numAttacked) * bytesPerTarget;
+    if (packet->Size < totalTargetBytes + 29) {
+        return false;
+    }
+
+    unsigned long offset = packet->Size - totalTargetBytes;
+    bool modified = false;
+
+    for (int target = 0; target < numAttacked; target++) {
+        offset += 18;
+        for (int line = 0; line < numDamage; line++) {
+            if (offset + 4 > packet->Size) {
+                return modified;
+            }
+
+            int damage = ReadI32(packet->Data + offset);
+            if (damage > 0) {
+                long long scaledDamage = (static_cast<long long>(damage) * rate) / 100;
+                if (scaledDamage > 2147483647LL) {
+                    scaledDamage = 2147483647LL;
+                }
+                int newDamage = static_cast<int>(scaledDamage);
+                if (newDamage != damage) {
+                    WriteI32(packet->Data + offset, newDamage);
+                    modified = true;
+                    if (firstRawDmg != nullptr && *firstRawDmg == 0) {
+                        *firstRawDmg = damage;
+                    }
+                    if (firstNewDmg != nullptr && *firstNewDmg == 0) {
+                        *firstNewDmg = newDamage;
+                    }
+                }
+            }
+            offset += 4;
+        }
+        offset += 4;
+    }
+
+    return modified;
 }
 
 // Kept as a no-op while native client WZ elemental calculation is authoritative.
@@ -175,19 +238,22 @@ bool TryApplyElementalBonus(COutPacket* packet) {
     // Look up skill element
     auto it = kSkillElementMap.find(skillId);
     if (it == kSkillElementMap.end()) {
-        g_lastSkillElem = 0; // Not an elemental skill
         return false;
     }
 
-    const char elemChar = it->second;
-    g_lastSkillElem = elemChar;
+    const char* elemChars = it->second;
 
     short bonus;
     short elemDefault;
     {
         std::lock_guard<std::mutex> lock(g_bonusMutex);
-        bonus = GetBonusForElement(elemChar);
+        bonus = GetBestBonusForElements(elemChars);
         elemDefault = g_elemDefault;
+    }
+
+    short effectiveRate = bonus > 0 ? bonus : elemDefault;
+    if (effectiveRate <= 0) {
+        effectiveRate = 100;
     }
 
     // Fixed damage offset: header(25) + oid(4) + skip14 = 43
@@ -197,14 +263,27 @@ bool TryApplyElementalBonus(COutPacket* packet) {
         firstRawDmg = ReadI32(packet->Data + DMG_OFFSET);
     }
 
-    if (Client::debug) {
-        const short nativeRate = bonus > 0 ? bonus : elemDefault;
-        QuestHookTrace("[DMG] Native skill=%d e=%c dmg=%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
-            skillId, elemChar, firstRawDmg, nativeRate,
-            g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
+    int firstPatchedRawDmg = 0;
+    int firstPatchedNewDmg = 0;
+    bool modified = false;
+    if (IsMixedElementSkill(skillId)) {
+        modified = ApplyRateToMagicAttackPacket(packet, numAttacked, numDamage, effectiveRate,
+            &firstPatchedRawDmg, &firstPatchedNewDmg);
     }
 
-    return false;
+    if (Client::debug) {
+        if (modified) {
+            QuestHookTrace("[DMG] Mixed skill=%d e=%s dmg=%d->%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+                skillId, elemChars, firstPatchedRawDmg, firstPatchedNewDmg, effectiveRate,
+                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
+        } else {
+            QuestHookTrace("[DMG] Native skill=%d e=%s dmg=%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+                skillId, elemChars, firstRawDmg, effectiveRate,
+                g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
+        }
+    }
+
+    return modified;
 }
 
 } // namespace ElementalWeapon
