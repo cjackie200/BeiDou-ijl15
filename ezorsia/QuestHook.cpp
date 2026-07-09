@@ -29,6 +29,8 @@ constexpr WORD kSendSpawnNpcController = 0x0103;
 constexpr WORD kSendNpcTalk = 0x0130;
 constexpr WORD kSendSetField = 0x007D;
 constexpr WORD kSendStatChanged = 0x001F;
+constexpr WORD kSendApplyMonsterStatus = 0x00F2;
+constexpr WORD kSendCancelMonsterStatus = 0x00F3;
 constexpr WORD kS2CInteractionHookRules = 0x1001;
 constexpr WORD kS2CInteractionHookResult = 0x1002;
 constexpr WORD kS2CInteractionHookProgress = 0x1004;
@@ -1284,11 +1286,14 @@ static void TrackNpcRemove(int objectId) {
 }
 
 static void ResetFieldState() {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    g_npcIdByObjectId.clear();
-    ClearIgnoreNextQuestActionLocked();
-    ClearExpectedInteractionHookNpcTalkLocked();
-    ClearDialogStateLocked();
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_npcIdByObjectId.clear();
+        ClearIgnoreNextQuestActionLocked();
+        ClearExpectedInteractionHookNpcTalkLocked();
+        ClearDialogStateLocked();
+    }
+    ElementalWeapon::ClearRuntimeState();
 }
 
 static int ExpectedNpcTalkAckId(const HookEvent& event) {
@@ -1433,6 +1438,10 @@ static void TrackIncomingPacket(unsigned short opcode, const unsigned char* payl
     }
     if (opcode == kSendStatChanged) {
         TrackStatChangedPacket(payload, payloadSize);
+        return;
+    }
+    if (opcode == kSendApplyMonsterStatus || opcode == kSendCancelMonsterStatus) {
+        ElementalWeapon::TrackMonsterStatusPacket(opcode, payload, payloadSize);
     }
 }
 
@@ -2418,8 +2427,7 @@ static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* me
     if (message != nullptr
             && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)
             && g_autoKeyDownFixEnabled.load()) {
-        // 入口：清零 lParam 的 repeatCount（Bit 0..15）和 transition（Bit 31），
-        // 让原始函数内部的防长按计数器不会因重复消息而递增。
+        // Clear repeatCount (Bit 0..15) and transition (Bit 31) before the original handler.
         constexpr unsigned int kKeepMask = ~(0x0000FFFFu | 0x80000000u);
         const unsigned int before = static_cast<unsigned int>(message->lParam);
         message->lParam = static_cast<int>((before & kKeepMask) | 1);
@@ -2427,7 +2435,7 @@ static int __fastcall GenerateAutoKeyDown_Hook(void* pThis, void* edx, ISMSG* me
 
     const int result = g_GenerateAutoKeyDown(pThis, edx, message);
 
-    // 出口兜底：即使内部计数器因其他路径触发返回了 0，也强制覆写为 1（放行）。
+    // Fallback: force keydown through even if the original counter blocks it.
     if (result == 0 && g_autoKeyDownFixEnabled.load()) {
         return 1;
     }

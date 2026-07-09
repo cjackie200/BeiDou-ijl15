@@ -20,6 +20,13 @@ namespace ElementalWeapon {
 // Called when the server sends elemental weapon config (opcode 0x1006).
 void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize);
 
+// Clears map-local elemental runtime state, such as poison-induced fire weakness.
+void ClearRuntimeState();
+
+// Tracks monster status packets so temporary server-side element changes can be
+// mirrored before the client sends locally calculated damage.
+void TrackMonsterStatusPacket(unsigned short opcode, const unsigned char* payload, unsigned long payloadSize);
+
 // Intercepts magic attack packets (0x2E) and modifies damage numbers in-place.
 // Returns true if the packet was modified.
 bool TryApplyElementalBonus(COutPacket* packet);

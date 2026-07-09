@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -18,6 +19,15 @@ static short g_lightningBonus = 0;  // incRMAL
 static short g_holyBonus = 0;       // incRMAH
 static short g_elemDefault = 0;     // elemDefault
 static std::mutex g_bonusMutex;
+static std::mutex g_statusMutex;
+static std::unordered_set<int> g_poisonFireWeakOids;
+
+constexpr unsigned short kApplyMonsterStatus = 0x00F2;
+constexpr unsigned short kCancelMonsterStatus = 0x00F3;
+constexpr int kPoisonStatusMask = 0x00000200;
+constexpr int kFPWizardPoisonBreath = 2101005;
+constexpr int kFPMagePoisonMist = 2111003;
+constexpr int kFPMageElementComposition = 2111006;
 
 // --- Skill ID → element character mapping ---
 // F = Fire, S = Poison, I = Ice, L = Lightning, H = Holy
@@ -36,8 +46,9 @@ static std::unordered_map<int, const char*> BuildSkillElementMap() {
     m[2111006] = "F"; // 火毒合击
 
     // Fire/Poison ArchMage
-    m[2121003] = "F"; // 火凤球
-    m[2121005] = "S"; // 冰破魔兽
+    m[2121003] = "F"; // Fire Demon
+    m[2121005] = "I"; // Elquines
+    m[2121006] = "S"; // Paralyze
     m[2121007] = "F"; // 天降落星
 
     // Ice/Lightning Wizard
@@ -118,12 +129,137 @@ static short GetBestBonusForElements(const char* elements) {
     return bestBonus;
 }
 
+static bool ElementStringContains(const char* elements, char element) {
+    if (elements == nullptr) {
+        return false;
+    }
+
+    for (const char* it = elements; *it != '\0'; ++it) {
+        if (*it == element) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool NeedsElementPacketPatch(int skillId) {
     return skillId == 2111006 || skillId == 2211006;
 }
 
-static bool ApplyRateToMagicAttackPacket(COutPacket* packet, int numAttacked, int numDamage, short rate, int* firstRawDmg, int* firstNewDmg) {
-    if (packet == nullptr || packet->Data == nullptr || rate <= 0 || rate == 100) {
+static bool NeedsPoisonMatchPatch(const char* elements, short bonus) {
+    return bonus > 0 && ElementStringContains(elements, 'S');
+}
+
+static bool IsFirePoisonDotSkill(int skillId) {
+    return skillId == kFPWizardPoisonBreath
+        || skillId == kFPMagePoisonMist
+        || skillId == kFPMageElementComposition;
+}
+
+static int CountBits(unsigned int value) {
+    int count = 0;
+    while (value != 0) {
+        count += static_cast<int>(value & 1U);
+        value >>= 1;
+    }
+    return count;
+}
+
+static bool IsPoisonFireWeakOid(int oid) {
+    std::lock_guard<std::mutex> lock(g_statusMutex);
+    return g_poisonFireWeakOids.find(oid) != g_poisonFireWeakOids.end();
+}
+
+static void TrackApplyMonsterStatus(const unsigned char* payload, unsigned long payloadSize) {
+    if (payload == nullptr || payloadSize < 20) {
+        return;
+    }
+
+    const int oid = ReadI32(payload);
+    if (oid <= 0) {
+        return;
+    }
+
+    const int firstMask = ReadI32(payload + 12);
+    const int secondMask = ReadI32(payload + 16);
+    if ((secondMask & kPoisonStatusMask) == 0) {
+        return;
+    }
+
+    const int statusCount = CountBits(static_cast<unsigned int>(firstMask))
+        + CountBits(static_cast<unsigned int>(secondMask));
+    if (statusCount <= 0) {
+        return;
+    }
+
+    const unsigned long entriesOffset = 20;
+    const unsigned long entriesBytes = static_cast<unsigned long>(statusCount) * 8UL;
+    if (payloadSize < entriesOffset + entriesBytes) {
+        return;
+    }
+
+    int firePoisonSkillId = 0;
+    unsigned long cursor = entriesOffset;
+    for (int i = 0; i < statusCount; ++i) {
+        const int sourceSkillId = ReadI32(payload + cursor + 2);
+        if (IsFirePoisonDotSkill(sourceSkillId)) {
+            firePoisonSkillId = sourceSkillId;
+            break;
+        }
+        cursor += 8;
+    }
+
+    if (firePoisonSkillId == 0) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_statusMutex);
+        g_poisonFireWeakOids.insert(oid);
+    }
+
+    if (Client::debug) {
+        QuestHookTrace("ElementalWeapon poison fire-weak apply oid=%d skill=%d statusCount=%d",
+            oid, firePoisonSkillId, statusCount);
+    }
+}
+
+static void TrackCancelMonsterStatus(const unsigned char* payload, unsigned long payloadSize) {
+    if (payload == nullptr || payloadSize < 20) {
+        return;
+    }
+
+    const int oid = ReadI32(payload);
+    if (oid <= 0) {
+        return;
+    }
+
+    const int secondMask = ReadI32(payload + 16);
+    if ((secondMask & kPoisonStatusMask) == 0) {
+        return;
+    }
+
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lock(g_statusMutex);
+        erased = g_poisonFireWeakOids.erase(oid) > 0;
+    }
+
+    if (erased && Client::debug) {
+        QuestHookTrace("ElementalWeapon poison fire-weak cancel oid=%d", oid);
+    }
+}
+
+static bool ApplyRatesToMagicAttackPacket(
+    COutPacket* packet,
+    int numAttacked,
+    int numDamage,
+    int baseRate,
+    bool fireSkill,
+    int* firstRawDmg,
+    int* firstNewDmg,
+    int* fireWeakTargets) {
+    if (packet == nullptr || packet->Data == nullptr || baseRate <= 0) {
         return false;
     }
 
@@ -137,6 +273,19 @@ static bool ApplyRateToMagicAttackPacket(COutPacket* packet, int numAttacked, in
     bool modified = false;
 
     for (int target = 0; target < numAttacked; target++) {
+        if (offset + 18 > packet->Size) {
+            return modified;
+        }
+
+        const int oid = ReadI32(packet->Data + offset);
+        int targetRate = baseRate;
+        if (fireSkill && IsPoisonFireWeakOid(oid)) {
+            targetRate = (targetRate * 150) / 100;
+            if (fireWeakTargets != nullptr) {
+                ++(*fireWeakTargets);
+            }
+        }
+
         offset += 18;
         for (int line = 0; line < numDamage; line++) {
             if (offset + 4 > packet->Size) {
@@ -144,8 +293,8 @@ static bool ApplyRateToMagicAttackPacket(COutPacket* packet, int numAttacked, in
             }
 
             int damage = ReadI32(packet->Data + offset);
-            if (damage > 0) {
-                long long scaledDamage = (static_cast<long long>(damage) * rate) / 100;
+            if (damage > 0 && targetRate != 100) {
+                long long scaledDamage = (static_cast<long long>(damage) * targetRate) / 100;
                 if (scaledDamage > 2147483647LL) {
                     scaledDamage = 2147483647LL;
                 }
@@ -214,6 +363,21 @@ void HandleConfigPacket(const unsigned char* payload, unsigned long payloadSize)
     }
 }
 
+void ClearRuntimeState() {
+    std::lock_guard<std::mutex> lock(g_statusMutex);
+    g_poisonFireWeakOids.clear();
+}
+
+void TrackMonsterStatusPacket(unsigned short opcode, const unsigned char* payload, unsigned long payloadSize) {
+    if (opcode == kApplyMonsterStatus) {
+        TrackApplyMonsterStatus(payload, payloadSize);
+        return;
+    }
+    if (opcode == kCancelMonsterStatus) {
+        TrackCancelMonsterStatus(payload, payloadSize);
+    }
+}
+
 bool TryApplyElementalBonus(COutPacket* packet) {
     if (packet == nullptr || packet->Data == nullptr || packet->Size < 29) {
         return false;
@@ -243,6 +407,7 @@ bool TryApplyElementalBonus(COutPacket* packet) {
 
     const char* elemChars = it->second;
 
+    const bool fullPacketPatch = NeedsElementPacketPatch(skillId);
     short bonus;
     short elemDefault;
     {
@@ -251,9 +416,14 @@ bool TryApplyElementalBonus(COutPacket* packet) {
         elemDefault = g_elemDefault;
     }
 
-    short effectiveRate = bonus > 0 ? bonus : elemDefault;
-    if (effectiveRate <= 0) {
-        effectiveRate = 100;
+    int baseRate = 100;
+    if (fullPacketPatch || NeedsPoisonMatchPatch(elemChars, bonus)) {
+        baseRate = bonus > 0 ? bonus : elemDefault;
+        if (baseRate <= 0) {
+            baseRate = 100;
+        }
+    } else if (bonus <= 0 && elemDefault > 0 && elemDefault != 100) {
+        baseRate = elemDefault;
     }
 
     // Fixed damage offset: header(25) + oid(4) + skip14 = 43
@@ -265,20 +435,19 @@ bool TryApplyElementalBonus(COutPacket* packet) {
 
     int firstPatchedRawDmg = 0;
     int firstPatchedNewDmg = 0;
-    bool modified = false;
-    if (NeedsElementPacketPatch(skillId)) {
-        modified = ApplyRateToMagicAttackPacket(packet, numAttacked, numDamage, effectiveRate,
-            &firstPatchedRawDmg, &firstPatchedNewDmg);
-    }
+    int fireWeakTargets = 0;
+    const bool fireSkill = ElementStringContains(elemChars, 'F');
+    bool modified = ApplyRatesToMagicAttackPacket(packet, numAttacked, numDamage, baseRate, fireSkill,
+        &firstPatchedRawDmg, &firstPatchedNewDmg, &fireWeakTargets);
 
     if (Client::debug) {
         if (modified) {
-            QuestHookTrace("[DMG] Patch skill=%d e=%s dmg=%d->%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
-                skillId, elemChars, firstPatchedRawDmg, firstPatchedNewDmg, effectiveRate,
+            QuestHookTrace("[DMG] Patch skill=%d e=%s dmg=%d->%d baseRate=%d weakTargets=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+                skillId, elemChars, firstPatchedRawDmg, firstPatchedNewDmg, baseRate, fireWeakTargets,
                 g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
         } else {
-            QuestHookTrace("[DMG] Native skill=%d e=%s dmg=%d rate=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
-                skillId, elemChars, firstRawDmg, effectiveRate,
+            QuestHookTrace("[DMG] Native skill=%d e=%s dmg=%d baseRate=%d weakTargets=%d F=%d S=%d I=%d L=%d H=%d elemDefault=%d",
+                skillId, elemChars, firstRawDmg, baseRate, fireWeakTargets,
                 g_fireBonus, g_poisonBonus, g_iceBonus, g_lightningBonus, g_holyBonus, g_elemDefault);
         }
     }
