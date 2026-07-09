@@ -428,26 +428,8 @@ static unsigned long IncomingPacketSize(CInPacket* packet) {
 }
 
 static void TraceV(const char* format, va_list args) {
-    if (!Client::debug) return;
-    std::lock_guard<std::mutex> lock(g_traceMutex);
-    FILE* file = nullptr;
-    if (fopen_s(&file, "interaction-hook.log", "ab") != 0 || file == nullptr) {
-        return;
-    }
-
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
-    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
-        now.wYear,
-        now.wMonth,
-        now.wDay,
-        now.wHour,
-        now.wMinute,
-        now.wSecond,
-        now.wMilliseconds);
-    std::vfprintf(file, format, args);
-    std::fprintf(file, "\r\n");
-    std::fclose(file);
+    (void)format;
+    (void)args;
 }
 
 static void Trace(const char* format, ...) {

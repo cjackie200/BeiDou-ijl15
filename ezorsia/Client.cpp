@@ -155,19 +155,6 @@ void Client::UpdateGameStartup() {
 	Memory::WriteInt(0x0078E67D + 1, 2147483646); //CalcDamage::PDamage 999，意义不明，int 4字节
 		Memory::WriteInt(0x007918FC + 1, 2147483646); //CalcDamage::MDamage 999
 
-		// Phase 2: read instruction bytes around CalcDamage::MDamage clamp
-		{
-			unsigned char b[16];
-			memcpy(b, (const void*)0x0079166C, 16);
-			FILE* f = nullptr;
-			if (fopen_s(&f, "phase2-diag.log", "w") == 0 && f) {
-				fprintf(f, "Bytes at 0x0079166C: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X\n",
-					b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-					b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-				fclose(f);
-			}
-		}
-
 		Memory::WriteDouble(0x00AFE8A0, setAtkOutCap);	// 输出显示上限
 
 	Memory::WriteInt(0x00780743 + 3, speedMovementCap); //set speed cap //ty ronan

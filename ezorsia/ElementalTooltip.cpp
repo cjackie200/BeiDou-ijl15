@@ -76,41 +76,7 @@ int g_equipTraceCount = 0;
 int g_textFaultTraceCount = 0;
 
 void TooltipTrace(const char* format, ...) {
-    char logPath[MAX_PATH]{};
-    if (GetModuleFileNameA(nullptr, logPath, MAX_PATH) == 0) {
-        strcpy_s(logPath, "elemental-tooltip.log");
-    } else {
-        char* slash = strrchr(logPath, '\\');
-        if (slash == nullptr) {
-            strcpy_s(logPath, "elemental-tooltip.log");
-        } else {
-            strcpy_s(slash + 1, MAX_PATH - static_cast<size_t>(slash + 1 - logPath), "elemental-tooltip.log");
-        }
-    }
-
-    FILE* file = nullptr;
-    if (fopen_s(&file, logPath, "ab") != 0 || file == nullptr) {
-        return;
-    }
-
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
-    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
-        now.wYear,
-        now.wMonth,
-        now.wDay,
-        now.wHour,
-        now.wMinute,
-        now.wSecond,
-        now.wMilliseconds);
-
-    va_list args;
-    va_start(args, format);
-    std::vfprintf(file, format, args);
-    va_end(args);
-
-    std::fprintf(file, "\r\n");
-    std::fclose(file);
+    (void)format;
 }
 
 void SafeCStringPreview(int value, char* buffer, size_t bufferSize) {

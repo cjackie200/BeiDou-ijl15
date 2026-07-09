@@ -17,29 +17,8 @@
 
 static void ElementalTooltipBootTrace(const char* modulePath, const char* message)
 {
-	if (modulePath == nullptr || message == nullptr) return;
-
-	char logPath[MAX_PATH]{};
-	strcpy_s(logPath, modulePath);
-	char* slash = strrchr(logPath, '\\');
-	if (slash == nullptr) return;
-	strcpy_s(slash + 1, MAX_PATH - static_cast<size_t>(slash + 1 - logPath), "elemental-tooltip-boot.log");
-
-	FILE* file = nullptr;
-	if (fopen_s(&file, logPath, "ab") != 0 || file == nullptr) return;
-
-	SYSTEMTIME now{};
-	GetLocalTime(&now);
-	std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u %s\r\n",
-		now.wYear,
-		now.wMonth,
-		now.wDay,
-		now.wHour,
-		now.wMinute,
-		now.wSecond,
-		now.wMilliseconds,
-		message);
-	std::fclose(file);
+	(void)modulePath;
+	(void)message;
 }
 
 // config.ini can use IP or hostname (ServerIP_Address=...).
