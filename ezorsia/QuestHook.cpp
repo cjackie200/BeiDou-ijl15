@@ -94,6 +94,7 @@ constexpr int kClearScope = 2;
 constexpr int kMaxRulesPerPacket = 100;
 constexpr int kMaxRuleCount = 20000;
 constexpr ULONGLONG kPendingRuleBatchTimeoutMs = 5000;
+constexpr ULONGLONG kActivePendingTimeoutMs = 5000;
 constexpr ULONGLONG kIgnoreNextQuestActionTimeoutMs = 1500;
 
 struct CInPacket {
@@ -149,6 +150,16 @@ struct PendingPacket {
 struct PendingLocalQuestAction {
     void* thisPtr;
     int arg;
+    int questId;
+    int npcId;
+    int nativeAction;
+    int questState;
+};
+
+struct DialogSnapshot {
+    int npcId;
+    int context;
+    int state;
 };
 
 enum class PendingKind {
@@ -170,6 +181,7 @@ struct ActivePending {
     int questId;
     int npcId;
     int rawAction;
+    ULONGLONG createdAt;
     PendingKind kind;
     PendingPacket packet;
     PendingLocalQuestAction localQuestAction;
@@ -216,9 +228,11 @@ static bool g_rulesLoaded = false;
 static int g_currentDialogNpcId = 0;
 static int g_currentDialogContext = kDialogContextNone;
 static int g_currentDialogState = kDialogStateNone;
+static int g_currentDialogContinuationMask = 0;
 static int g_expectedInteractionHookNpcTalkNpcId = 0;
 static ULONGLONG g_expectedInteractionHookNpcTalkUntil = 0;
-static bool g_replayingLocalQuestAction = false;
+static thread_local bool g_replayingLocalQuestAction = false;
+static thread_local bool g_replayingOriginalInteraction = false;
 static std::atomic<int> g_nextRequestId{ 1 };
 static std::mutex g_traceMutex;
 static PVOID g_exceptionHandler = nullptr;
@@ -227,6 +241,8 @@ static std::atomic<bool> g_keyTraceRunning{ false };
 static std::atomic<bool> g_autoKeyDownFixEnabled{ true };
 
 static void Trace(const char* format, ...);
+static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId,
+                                    int& nativeAction, int& actionMask, int& questState);
 
 enum class IncomingResult {
     None,
@@ -641,6 +657,7 @@ static void ClearDialogStateLocked() {
     g_currentDialogNpcId = 0;
     g_currentDialogContext = kDialogContextNone;
     g_currentDialogState = kDialogStateNone;
+    g_currentDialogContinuationMask = 0;
 }
 
 static void ClearIgnoreNextQuestActionLocked() {
@@ -667,7 +684,6 @@ static void ClearAllRulesLocked() {
     g_activePending = ActivePending{};
     ClearIgnoreNextQuestActionLocked();
     ClearExpectedInteractionHookNpcTalkLocked();
-    g_npcIdByObjectId.clear();
     ClearDialogStateLocked();
     for (int& batchId : g_lastAppliedRuleBatchIds) {
         batchId = 0;
@@ -891,22 +907,6 @@ static bool RuleSetMatchesLocked(const std::vector<InteractionHookRule>& rules, 
     return false;
 }
 
-static bool RuleSetHasEventLocked(const std::vector<InteractionHookRule>& rules, int eventType) {
-    const int mask = EventMask(eventType);
-    for (const InteractionHookRule& rule : rules) {
-        if ((rule.eventMask & mask) != 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool HasEventRuleLocked(int eventType) {
-    return RuleSetHasEventLocked(g_characterQuestRules, eventType)
-        || RuleSetHasEventLocked(g_mapNpcRules, eventType)
-        || RuleSetHasEventLocked(g_dialogTempRules, eventType);
-}
-
 static bool ShouldIntercept(const HookEvent& event, int actionMask) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (!g_rulesLoaded) {
@@ -918,8 +918,9 @@ static bool ShouldIntercept(const HookEvent& event, int actionMask) {
         return true;
     }
 
-    // If the object->NPC mapping is unavailable, let the server validate NPC clicks.
-    return event.eventType == kEventNpcClick && event.clientNpcId <= 0 && HasEventRuleLocked(kEventNpcClick);
+    // An unresolved object ID cannot be matched safely. Let the original NPC_TALK
+    // reach the server instead of routing every NPC on the map through Hook fallback.
+    return false;
 }
 
 static bool ParseRules(const unsigned char* cursor, int count, unsigned long availableBytes,
@@ -1225,21 +1226,6 @@ static int ResolveNpcIdByObjectId(int objectId) {
     return it == g_npcIdByObjectId.end() ? 0 : it->second;
 }
 
-static int CurrentDialogNpcId() {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    return g_currentDialogNpcId;
-}
-
-static int CurrentDialogContext() {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    return g_currentDialogContext;
-}
-
-static int CurrentDialogState() {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    return g_currentDialogState;
-}
-
 static void ClearExpectedInteractionHookNpcTalkForOutgoingClick() {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_expectedInteractionHookNpcTalkNpcId <= 0) {
@@ -1271,6 +1257,9 @@ static void ResetFieldState() {
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_npcIdByObjectId.clear();
+        // Local quest pending entries contain UI object pointers owned by the old
+        // field. A late fallback must never replay them after SET_FIELD.
+        g_activePending = ActivePending{};
         ClearIgnoreNextQuestActionLocked();
         ClearExpectedInteractionHookNpcTalkLocked();
         ClearDialogStateLocked();
@@ -1294,6 +1283,23 @@ static void ClearActivePendingLocked() {
     g_activePending = ActivePending{};
 }
 
+static void CleanupExpiredActivePendingLocked() {
+    if (g_activePending.requestId <= 0 || g_activePending.createdAt == 0) {
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_activePending.createdAt
+            || now - g_activePending.createdAt < kActivePendingTimeoutMs) {
+        return;
+    }
+    Trace("ActivePending expired requestId=%d eventType=%d kind=%d ageMs=%llu",
+        g_activePending.requestId,
+        g_activePending.eventType,
+        static_cast<int>(g_activePending.kind),
+        now - g_activePending.createdAt);
+    ClearActivePendingLocked();
+}
+
 static void DropActivePendingOnNpcTalkLocked(int npcId) {
     if (g_activePending.requestId <= 0 || g_activePending.expectedNpcId <= 0) {
         return;
@@ -1309,6 +1315,7 @@ static void DropActivePendingOnNpcTalkLocked(int npcId) {
 }
 
 static bool ActivePendingMatchesNpcTalkLocked(int npcId) {
+    CleanupExpiredActivePendingLocked();
     return g_activePending.requestId > 0
         && g_activePending.expectedNpcId > 0
         && g_activePending.expectedNpcId == npcId;
@@ -1333,6 +1340,44 @@ static bool ConsumeExpectedInteractionHookNpcTalkLocked(int npcId) {
     return true;
 }
 
+static int NpcTalkContinuationMask(const unsigned char* payload, unsigned long payloadSize) {
+    constexpr int kModeZero = 1;
+    constexpr int kModeOne = 1 << 1;
+    if (payload == nullptr || payloadSize < 9) {
+        return 0;
+    }
+
+    const unsigned char messageType = payload[5];
+    if (messageType != 0) {
+        // Confirmation, selection and input dialogs only continue after a
+        // positive response. mode=0 and 0xFF are cancellation paths.
+        return kModeOne;
+    }
+
+    const unsigned long textLength = ReadU16(payload + 7);
+    const unsigned long tailOffset = 9 + textLength;
+    if (tailOffset > payloadSize || payloadSize - tailOffset < 2) {
+        return 0;
+    }
+
+    int mask = 0;
+    if (payload[tailOffset] != 0) {
+        mask |= kModeZero; // previous
+    }
+    if (payload[tailOffset + 1] != 0) {
+        mask |= kModeOne; // next
+    }
+    return mask;
+}
+
+static bool CurrentDialogCanContinueLocked(unsigned char action) {
+    if (action == 0xFF) {
+        return false;
+    }
+    const int actionMask = action == 0 ? 1 : 1 << 1;
+    return (g_currentDialogContinuationMask & actionMask) != 0;
+}
+
 static void TrackDialogEndLocked() {
     if (g_currentDialogState == kDialogStateNone) {
         return;
@@ -1349,8 +1394,14 @@ static void TrackDialogEndLocked() {
     }
 }
 
-static void TrackNpcMoreDialogEnd(unsigned char lastMsg, unsigned char action, int selection) {
+static DialogSnapshot TransitionNpcMoreDialog(unsigned char lastMsg, unsigned char action,
+                                               int selection, bool hookContextOnly) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    const DialogSnapshot snapshot{
+        g_currentDialogNpcId,
+        g_currentDialogContext,
+        g_currentDialogState
+    };
     Trace("TrackNpcMoreEnd lastMsg=%u action=%u selection=%d context=%d state=%d npcId=%d",
         lastMsg,
         action,
@@ -1358,7 +1409,23 @@ static void TrackNpcMoreDialogEnd(unsigned char lastMsg, unsigned char action, i
         g_currentDialogContext,
         g_currentDialogState,
         g_currentDialogNpcId);
+    if (hookContextOnly && g_currentDialogContext != kDialogContextInteractionHook) {
+        return snapshot;
+    }
+    if (g_currentDialogContext == kDialogContextInteractionHook
+            && g_currentDialogState == kDialogStateOpen
+            && CurrentDialogCanContinueLocked(action)
+            && g_currentDialogNpcId > 0) {
+        const int npcId = g_currentDialogNpcId;
+        StoreExpectedInteractionHookNpcTalkLocked(npcId);
+        ClearDialogStateLocked();
+        Trace("TrackNpcMoreEnd continuation=await-hook-npc-talk npcId=%d timeoutMs=%llu",
+            npcId,
+            kIgnoreNextQuestActionTimeoutMs);
+        return snapshot;
+    }
     TrackDialogEndLocked();
+    return snapshot;
 }
 
 static void TrackNpcTalkPacket(const unsigned char* payload, unsigned long payloadSize) {
@@ -1367,11 +1434,13 @@ static void TrackNpcTalkPacket(const unsigned char* payload, unsigned long paylo
     }
     std::lock_guard<std::mutex> lock(g_stateMutex);
     const int npcId = ReadI32(payload + 1);
-    const bool isHookNpcTalk = ActivePendingMatchesNpcTalkLocked(npcId)
-        || ConsumeExpectedInteractionHookNpcTalkLocked(npcId);
+    const bool pendingMatches = ActivePendingMatchesNpcTalkLocked(npcId);
+    const bool expectedMatches = ConsumeExpectedInteractionHookNpcTalkLocked(npcId);
+    const bool isHookNpcTalk = pendingMatches || expectedMatches;
     g_currentDialogNpcId = npcId;
     g_currentDialogContext = isHookNpcTalk ? kDialogContextInteractionHook : kDialogContextNpc;
     g_currentDialogState = kDialogStateOpen;
+    g_currentDialogContinuationMask = NpcTalkContinuationMask(payload, payloadSize);
     ClearIgnoreNextQuestActionLocked();
     DropActivePendingOnNpcTalkLocked(g_currentDialogNpcId);
     Trace("TrackNpcTalk npcId=%d payloadSize=%lu context=%d hook=%d",
@@ -1438,6 +1507,7 @@ static StorePendingResult StorePendingPacket(int requestId, void* socket, void* 
     pending.bytes.assign(packet->Data, packet->Data + packet->Size);
 
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredActivePendingLocked();
     if (g_activePending.requestId > 0) {
         Trace("StorePendingPacket duplicate activeRequestId=%d newRequestId=%d",
             g_activePending.requestId,
@@ -1451,6 +1521,7 @@ static StorePendingResult StorePendingPacket(int requestId, void* socket, void* 
     g_activePending.questId = event.questId;
     g_activePending.npcId = event.clientNpcId;
     g_activePending.rawAction = event.rawAction;
+    g_activePending.createdAt = GetTickCount64();
     g_activePending.kind = PendingKind::Packet;
     g_activePending.packet = std::move(pending);
     Trace("StorePendingPacket requestId=%d eventType=%d expectedNpcId=%d",
@@ -1462,6 +1533,7 @@ static StorePendingResult StorePendingPacket(int requestId, void* socket, void* 
 
 static bool TakePendingPacket(int requestId, PendingPacket& out) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredActivePendingLocked();
     if (g_activePending.requestId != requestId || g_activePending.kind != PendingKind::Packet) {
         return false;
     }
@@ -1472,6 +1544,7 @@ static bool TakePendingPacket(int requestId, PendingPacket& out) {
 
 static bool TakePendingLocalQuestAction(int requestId, PendingLocalQuestAction& out) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredActivePendingLocked();
     if (g_activePending.requestId != requestId || g_activePending.kind != PendingKind::LocalQuestAction) {
         return false;
     }
@@ -1483,11 +1556,12 @@ static bool TakePendingLocalQuestAction(int requestId, PendingLocalQuestAction& 
 static void StoreIgnoredQuestActionLocked(int questId, int npcId, int rawAction);
 
 static StorePendingResult StorePendingLocalQuestAction(int requestId, void* thisPtr, int arg,
-                                                       const HookEvent& event) {
+                                                        const HookEvent& event) {
     if (thisPtr == nullptr) {
         return StorePendingResult::Failed;
     }
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredActivePendingLocked();
     if (g_activePending.requestId > 0) {
         Trace("StorePendingLocalQuestAction duplicate activeRequestId=%d newRequestId=%d",
             g_activePending.requestId,
@@ -1501,13 +1575,53 @@ static StorePendingResult StorePendingLocalQuestAction(int requestId, void* this
     g_activePending.questId = event.questId;
     g_activePending.npcId = event.clientNpcId;
     g_activePending.rawAction = event.rawAction;
+    g_activePending.createdAt = GetTickCount64();
     g_activePending.kind = PendingKind::LocalQuestAction;
-    g_activePending.localQuestAction = PendingLocalQuestAction{ thisPtr, arg };
+    g_activePending.localQuestAction = PendingLocalQuestAction{
+        thisPtr,
+        arg,
+        event.questId,
+        event.clientNpcId,
+        event.rawAction,
+        event.questState
+    };
     Trace("StorePendingLocalQuestAction requestId=%d eventType=%d expectedNpcId=%d",
         requestId,
         event.eventType,
         g_activePending.expectedNpcId);
     return StorePendingResult::Stored;
+}
+
+static void ReplayOriginalPacketGuarded(void* socket, void* edx, COutPacket* packet) {
+    const bool wasReplayingOriginalInteraction = g_replayingOriginalInteraction;
+    g_replayingOriginalInteraction = true;
+    __try {
+        g_SendPacket(socket, edx, packet);
+    }
+    __finally {
+        g_replayingOriginalInteraction = wasReplayingOriginalInteraction;
+    }
+}
+
+static bool ReplayLocalQuestActionGuarded(void* thisPtr, int arg) {
+    const bool wasReplayingLocalQuestAction = g_replayingLocalQuestAction;
+    const bool wasReplayingOriginalInteraction = g_replayingOriginalInteraction;
+    bool replayed = false;
+    g_replayingLocalQuestAction = true;
+    g_replayingOriginalInteraction = true;
+    __try {
+        __try {
+            g_QuestActionClick(thisPtr, nullptr, arg);
+            replayed = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Trace("ReplayLocalQuestAction rejected this=%p arg=%d reason=access-violation", thisPtr, arg);
+        }
+    }
+    __finally {
+        g_replayingOriginalInteraction = wasReplayingOriginalInteraction;
+        g_replayingLocalQuestAction = wasReplayingLocalQuestAction;
+    }
+    return replayed;
 }
 
 static bool ReplayPendingPacket(int requestId) {
@@ -1522,7 +1636,7 @@ static bool ReplayPendingPacket(int requestId) {
     out.Size = static_cast<unsigned long>(pending.bytes.size());
     out.Offset = 0;
     out.EncryptedByShanda = 0;
-    g_SendPacket(pending.socket, pending.edx, &out);
+    ReplayOriginalPacketGuarded(pending.socket, pending.edx, &out);
     return true;
 }
 
@@ -1531,15 +1645,36 @@ static bool ReplayPendingLocalQuestAction(int requestId) {
     if (!TakePendingLocalQuestAction(requestId, pending) || pending.thisPtr == nullptr) {
         return false;
     }
+    int questId = 0;
+    int npcId = 0;
+    int nativeAction = 0;
+    int actionMask = 0;
+    int questState = 0;
+    if (!TryReadLocalQuestAction(pending.thisPtr, questId, npcId, nativeAction, actionMask, questState)
+            || questId != pending.questId
+            || npcId != pending.npcId
+            || nativeAction != pending.nativeAction
+            || questState != pending.questState) {
+        Trace("ReplayLocalQuestAction rejected requestId=%d this=%p expected=%d/%d/%d/%d actual=%d/%d/%d/%d",
+            requestId,
+            pending.thisPtr,
+            pending.questId,
+            pending.npcId,
+            pending.nativeAction,
+            pending.questState,
+            questId,
+            npcId,
+            nativeAction,
+            questState);
+        return false;
+    }
     Trace("ReplayLocalQuestAction requestId=%d this=%p arg=%d", requestId, pending.thisPtr, pending.arg);
-    g_replayingLocalQuestAction = true;
-    g_QuestActionClick(pending.thisPtr, nullptr, pending.arg);
-    g_replayingLocalQuestAction = false;
-    return true;
+    return ReplayLocalQuestActionGuarded(pending.thisPtr, pending.arg);
 }
 
 static void DropPendingPacket(int requestId, bool suppressQuestAction = false) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    CleanupExpiredActivePendingLocked();
     if (g_activePending.requestId != requestId) {
         Trace("DropPending ignored requestId=%d activeRequestId=%d",
             requestId,
@@ -1888,6 +2023,7 @@ static bool TryInterceptNpcTalkMore(void* socket, void* edx, COutPacket* packet)
     const unsigned char lastMsg = data[2];
     const unsigned char action = data[3];
     if (lastMsg == 2) {
+        TransitionNpcMoreDialog(lastMsg, action, kAnyId, true);
         Trace("Outgoing NPC_MORE ignored text-input size=%lu lastMsg=%u action=%u", packet->Size, lastMsg, action);
         return false;
     }
@@ -1899,14 +2035,18 @@ static bool TryInterceptNpcTalkMore(void* socket, void* edx, COutPacket* packet)
         selection = static_cast<int>(data[4]);
     }
     if (selection < 0) {
-        TrackNpcMoreDialogEnd(lastMsg, action, selection);
+        TransitionNpcMoreDialog(lastMsg, action, selection, false);
         Trace("Outgoing NPC_MORE ignored no-selection size=%lu lastMsg=%u action=%u selection=%d", packet->Size, lastMsg, action, selection);
         return false;
     }
 
-    const int npcId = CurrentDialogNpcId();
-    const int dialogContext = CurrentDialogContext();
-    const int dialogState = CurrentDialogState();
+    // Snapshot and transition the old page before sending the Hook event. The
+    // server may synchronously deliver the next NPC_TALK on another thread;
+    // clearing the old state after the send could otherwise erase that new page.
+    const DialogSnapshot dialog = TransitionNpcMoreDialog(lastMsg, action, selection, false);
+    const int npcId = dialog.npcId;
+    const int dialogContext = dialog.context;
+    const int dialogState = dialog.state;
     Trace("Outgoing NPC_MORE size=%lu lastMsg=%u action=%u selection=%d currentNpcId=%d",
         packet->Size, lastMsg, action, selection, npcId);
     HookEvent event{};
@@ -1976,33 +2116,10 @@ static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId, int
 
     int questEntryState = 0;
     __try {
-        unsigned char* base = reinterpret_cast<unsigned char*>(thisPtr);
+        const unsigned char* base = reinterpret_cast<const unsigned char*>(thisPtr);
         questId = static_cast<int>(*reinterpret_cast<const unsigned short*>(base + 0x0C));
         npcId = *reinterpret_cast<const int*>(base + 0x10);
         questEntryState = *reinterpret_cast<const int*>(base + 0x14);
-
-        // Check progress conditions and override entry state for NPC icon
-        if (questEntryState == 1) {
-            bool allMet = false;
-            // lock_guard cant be used inside __try, use manual lock/unlock
-            g_stateMutex.lock();
-            auto it = g_progressConditionsByQuestId.find(questId);
-            if (it != g_progressConditionsByQuestId.end() && !it->second.empty()) {
-                allMet = true;
-                for (const auto& cond : it->second) {
-                    if (cond.first < cond.second) {
-                        allMet = false;
-                        break;
-                    }
-                }
-            }
-            g_stateMutex.unlock();
-            if (allMet) {
-                *reinterpret_cast<int*>(base + 0x14) = 2;
-                questEntryState = 2;
-                Trace("LocalQuestAction questEntryState override questId=%d 1->2", questId);
-            }
-        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         questId = 0;
         npcId = 0;
@@ -2020,13 +2137,6 @@ static bool TryReadLocalQuestAction(void* thisPtr, int& questId, int& npcId, int
 
     if (questId <= 0 || !ParseQuestAction(static_cast<unsigned char>(nativeAction), actionMask, questState)) {
         return false;
-    }
-
-    // Overridden entry state (2) -> nativeAction=1 (QUERY_START)
-    // ParseQuestAction sets questState to kQuestStateNotStarted for action=1
-    // Force questState to STARTED so server questStateMask(STARTED) still matches
-    if (questEntryState == 2 && nativeAction == 1) {
-        questState = kQuestStateStarted;
     }
 
     return true;
@@ -2269,7 +2379,7 @@ static IncomingResult HandleIncomingAtOffset(CInPacket* packet, unsigned long he
             Trace("Incoming elemental weapon config opcode offset=%lu payloadSize=%lu", headerOffset, payloadSize);
         }
         ElementalWeapon::HandleConfigPacket(payload, payloadSize);
-        return IncomingResult::Consumed; // Custom opcode — client doesn't understand it
+        return IncomingResult::Consumed; // Custom opcode - client doesn't understand it
     }
 
     TrackIncomingPacket(opcode, payload, payloadSize);
@@ -2360,6 +2470,9 @@ bool HandleQuestHookIncoming(void* packet) {
 }
 
 bool TryHandleQuestHookSend(void* socket, void* edx, void* packet) {
+    if (g_replayingOriginalInteraction) {
+        return false;
+    }
     bool handled = false;
     __try {
         COutPacket* outPacket = reinterpret_cast<COutPacket*>(packet);
